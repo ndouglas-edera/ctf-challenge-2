@@ -2621,12 +2621,12 @@ function render(): void {
   <div className="mission-description">
   <p>
     You have access a deliberately misconfigured <strong>Kubernetes cluster</strong>.<br> 
-    Use the <br><i>OWASP Top 10 for Kubernetes</i> as your guide.
+    Use the <i><a href="https://kubernetes-top10.owasp.org/">OWASP Top 10 for Kubernetes</a></i> as your guide.
   </p>
 
   <p>
     Find <strong>10 misconfigurations</strong>
-    that could lead to a production compromise.<br> 
+    that could lead to production compromise.<br> 
     Capture all <b>10 flags</b> to complete the exercise.
   </p>
 </div>
