@@ -2562,7 +2562,7 @@ function renderTerminal(): string {
                 <div class="terminal-brand">EDERA</div>
                 <div class="terminal-lab">ISOLATION RESEARCH LAB</div>
                 <div class="terminal-challenge">
-                  SECURITY CHALLENGE 01
+                  SECURITY CHALLENGE 02
                 </div>
 
                 <div class="terminal-rule"></div>
@@ -2571,7 +2571,7 @@ function renderTerminal(): string {
                   You are auditing a node that runs a mix of zone-backed
                   and default-runtime workloads.
                   <br />
-                  Six flags. Each one is a value you read out of a real
+                  Ten flags mapped to the OWASP Kubernetes Top 10. Each one is a value you read out of a real
                   command. Capture them in order.
                 </div>
 
@@ -2718,7 +2718,7 @@ function render(): void {
             </section>
 
             ${renderObjectives()}
-            ${renderFlags()}
+            ${/* Temporarily disabled: the Captured Flags panel adds no useful gameplay value yet. */ ""}
           </aside>
         </section>
 
