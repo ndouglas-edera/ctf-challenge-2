@@ -2620,13 +2620,13 @@ function render(): void {
 
   <div className="mission-description">
   <p>
-    You have audit access to a node running <strong>Edera</strong>.<br> 
-    Some workloads on it boot their own kernel. <br><i>At least one does not</i>.
+    You have access a deliberately misconfigured <strong>Kubernetes cluster</strong>.<br> 
+    Use the <br><i>OWASP Top 10 for Kubernetes</i> as your guide.
   </p>
 
   <p>
-    Work through the cluster with <strong>kubectl</strong>
-    & <strong>Edera</strong>.<br> 
+    Find <strong>10 misconfigurations</strong>
+    that could lead to a production compromise.<br> 
     Capture all <b>10 flags</b> to complete the exercise.
   </p>
 </div>
