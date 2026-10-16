@@ -329,93 +329,85 @@ interface Stage {
 
 const stages: Stage[] = [
   {
-    title: "Zone kernel",
-    objective: "Find the zone kernel image pinned to a customer workload.",
-    brief: [
-      "Every Edera-backed pod pins the kernel it boots in a",
-      "metadata annotation. Read a pod and submit that image.",
-    ],
-    answers: [ZONE_KERNEL],
-    flag: "EDERA{ZONE_KERNEL_6_15}",
-    reward: [
-      "That annotation is the pod asking for a specific kernel.",
-      "Pods without it are not booting a kernel of their own.",
-    ],
-  },
-  {
-    title: "Image digest",
-    objective: "Pin the zone kernel to a digest from the local cache.",
-    brief: [
-      "A tag can move. Find the digest the daemon actually",
-      "cached for that kernel image and submit it.",
-    ],
-    answers: [
-      images[0].digest,
-      images[0].digest.replace("sha256:", ""),
-      images[0].digest.slice(0, 19),
-    ],
-    flag: "EDERA{DIGEST_PINNED}",
-    reward: [
-      "The digest is what the zone really boots.",
-      "Verify zone kernel images against it before you trust a tag.",
-    ],
-  },
-  {
-    title: "Kernel variant",
-    objective: "Identify the kernel variant the eBPF workload requests.",
-    brief: [
-      "One workload needs kernel features the default variant",
-      "does not ship. Name the variant it asks for.",
-    ],
-    answers: ["ebpf", "dev.edera/kernel-variant=ebpf"],
-    flag: "EDERA{EBPF_VARIANT}",
-    reward: [
-      "Variants let a workload get BTF and BPF LSM without",
-      "changing the kernel every other tenant runs.",
-    ],
-  },
-  {
-    title: "Failed zone",
-    objective: "Find the zone that failed to start.",
-    brief: [
-      "One pod is stuck. Filter zones by state and submit the",
-      "name of the zone that never came up.",
-    ],
-    answers: ["zone-analytics-d"],
-    flag: "EDERA{ZONE_FAILED_OOM}",
-    reward: [
-      "A zone that cannot start is loud and visible.",
-      "A workload with no zone at all is silent. Keep counting.",
-    ],
-  },
-  {
-    title: "Missing RuntimeClass",
-    objective: "Find the workload running without a zone.",
-    brief: [
-      "Six pods are scheduled. There are five zones, and one",
-      "of them failed. Name the pod that never asked for one.",
-    ],
+    title: "K01 · Insecure workload configurations",
+    objective: "Identify the workload bypassing Edera isolation.",
+    brief: ["Inspect pod security settings and RuntimeClass assignments.", "Submit the unsafe pod name."],
     answers: ["recommendation-c", "customer-c/recommendation-c"],
-    flag: "EDERA{NO_RUNTIME_CLASS}",
-    reward: [
-      "It is privileged and it has no runtimeClassName.",
-      "Nothing rejected it. It simply got the default runtime.",
-    ],
+    flag: "EDERA{K01_INSECURE_WORKLOAD}",
+    reward: ["Privileged workloads without the intended runtime increase blast radius.", "Enforce workload security baselines."],
   },
   {
-    title: "Launch a zoned workload",
-    objective: "Create a zone, launch nginx into it, and follow its zone logs.",
-    brief: [
-      "Create a zone named my-zone, launch web-server with nginx:latest",
-      "into it, list the workload, then follow the zone logs and submit the final flag.",
-    ],
-    answers: ["EDERA{ZONE_WORKLOAD_LAUNCH}"],
-    flag: "EDERA{ZONE_WORKLOAD_LAUNCH}",
-    reward: [
-      "The workload is running inside its own Edera zone.",
-      "The final flag was emitted by the zone log stream.",
-    ],
+    title: "K02 · Overly permissive authorization",
+    objective: "Find the service account bound to excessive permissions.",
+    brief: ["Inspect ~/manifests/rbac-audit.yaml and ~/evidence/rbac-review.txt.", "Submit the affected service account."],
+    answers: ["report-bot"],
+    flag: "EDERA{K02_EXCESSIVE_PERMISSIONS}",
+    reward: ["RBAC should follow least privilege.", "Avoid wildcard and unnecessary cluster-wide permissions."],
   },
+  {
+    title: "K03 · Secrets management failures",
+    objective: "Identify the secret exposed through a workload environment variable.",
+    brief: ["Inspect ~/manifests/billing-api.yaml and ~/evidence/secret-review.txt.", "Submit the exposed Secret name."],
+    answers: ["billing-api-token"],
+    flag: "EDERA{K03_EXPOSED_SECRET}",
+    reward: ["Rotate exposed credentials and restrict Secret access.", "Avoid copying credentials into manifests or environment dumps."],
+  },
+  {
+    title: "K04 · Lack of cluster-level policy enforcement",
+    objective: "Identify the missing admission policy.",
+    brief: ["Inspect ~/manifests/policy-audit.yaml and ~/evidence/policy-review.txt.", "Submit the missing policy name."],
+    answers: ["restricted-workloads"],
+    flag: "EDERA{K04_MISSING_POLICY}",
+    reward: ["Admission controls prevent unsafe workloads before they run.", "Enforce policy consistently and test denials."],
+  },
+  {
+    title: "K05 · Missing network segmentation",
+    objective: "Find the namespace without effective ingress isolation.",
+    brief: ["Inspect ~/manifests/network-audit.yaml and ~/evidence/network-review.txt.", "Submit the affected namespace."],
+    answers: ["customer-b"],
+    flag: "EDERA{K05_NETWORK_SEGMENTATION}",
+    reward: ["Namespaces alone do not provide network isolation.", "Use NetworkPolicies and verify allowed flows."],
+  },
+  {
+    title: "K06 · Overly exposed Kubernetes components",
+    objective: "Identify the management component exposed beyond the trusted network.",
+    brief: ["Inspect ~/manifests/component-exposure.yaml and ~/evidence/component-review.txt.", "Submit the exposed component name."],
+    answers: ["metrics-dashboard"],
+    flag: "EDERA{K06_EXPOSED_COMPONENT}",
+    reward: ["Management endpoints should not be public by default.", "Restrict exposure and require authentication."],
+  },
+  {
+    title: "K07 · Misconfigured and vulnerable components",
+    objective: "Identify the workload using an unpinned image tag.",
+    brief: ["Inspect ~/manifests/vulnerable-component.yaml and the image inventory.", "Submit the affected workload name."],
+    answers: ["legacy-metrics"],
+    flag: "EDERA{K07_VULNERABLE_COMPONENT}",
+    reward: ["Scan images, use supported versions, and pin trusted artifacts.", "A mutable tag alone is not proof of a CVE."],
+  },
+  {
+    title: "K08 · Cluster-to-cloud lateral movement",
+    objective: "Identify the workload with unnecessarily available cloud identity.",
+    brief: ["Inspect ~/manifests/cloud-identity.yaml and ~/evidence/cloud-review.txt.", "Submit the workload name."],
+    answers: ["invoice-exporter"],
+    flag: "EDERA{K08_CLOUD_LATERAL_MOVEMENT}",
+    reward: ["Compromising a workload should not grant broad cloud access.", "Use scoped workload identity and restrict metadata access."],
+  },
+  {
+    title: "K09 · Broken authentication mechanisms",
+    objective: "Identify the component with an authentication bypass configuration.",
+    brief: ["Inspect ~/manifests/authentication-audit.yaml and ~/evidence/auth-review.txt.", "Submit the affected component."],
+    answers: ["legacy-auth-proxy"],
+    flag: "EDERA{K09_BROKEN_AUTHENTICATION}",
+    reward: ["Validate identity and tokens at each trust boundary.", "Remove bypass modes and validate issuer, audience, expiry, and signature."],
+  },
+  {
+    title: "K10 · Inadequate logging and monitoring",
+    objective: "Identify the audit rule missing coverage for Secret access.",
+    brief: ["Inspect ~/manifests/audit-policy.yaml and ~/evidence/audit-review.txt.", "Submit the missing audit rule."],
+    answers: ["secrets-metadata-and-response"],
+    flag: "EDERA{K10_INSUFFICIENT_MONITORING}",
+    reward: ["Audit logs must support investigation of sensitive operations.", "Protect logs, alert on suspicious activity, and test coverage."],
+  }
 ];
 
 interface GameState {
@@ -836,11 +828,37 @@ const virtualFiles: Record<string, string> = {
     "Node audit notes",
     "----------------",
     "Manifests for everything scheduled here are in ./manifests.",
+    "OWASP Top 10:2025 evidence notes are in ./evidence.",
     "",
     "kubectl and protect are both on PATH. The daemon socket is",
     "readable by this account, so protect talks to it directly.",
   ].join("\n"),
 };
+
+
+
+/* OWASP Top 10:2025 scenario manifests and evidence notes (synthetic lab data). */
+const OWASP_SCENARIO_FILES: Record<string, string> = {
+  "/home/ivy/manifests/rbac-audit.yaml": "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: report-bot-admin\nsubjects:\n  - kind: ServiceAccount\n    name: report-bot\n    namespace: customer-b\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: cluster-admin\n",
+  "/home/ivy/manifests/billing-api.yaml": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: billing-api-audit\n  namespace: customer-b\nspec:\n  containers:\n    - name: billing-api\n      image: ghcr.io/acme/billing-api:3.0.1\n      env:\n        - name: BILLING_TOKEN\n          valueFrom:\n            secretKeyRef:\n              name: billing-api-token\n              key: token\n",
+  "/home/ivy/manifests/policy-audit.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: admission-policy-audit\n  namespace: kube-system\ndata:\n  expected-policy: restricted-workloads\n  status: missing\n",
+  "/home/ivy/manifests/network-audit.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: network-policy-audit\n  namespace: customer-b\ndata:\n  namespace: customer-b\n  finding: no-default-deny-ingress\n",
+  "/home/ivy/manifests/component-exposure.yaml": "apiVersion: v1\nkind: Service\nmetadata:\n  name: metrics-dashboard\n  namespace: platform\nspec:\n  type: LoadBalancer\n  ports:\n    - port: 9090\n      targetPort: 9090\n",
+  "/home/ivy/manifests/vulnerable-component.yaml": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: legacy-metrics\n  namespace: platform\nspec:\n  containers:\n    - name: metrics\n      image: example.invalid/legacy-metrics:latest\n",
+  "/home/ivy/manifests/cloud-identity.yaml": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: invoice-exporter\n  namespace: customer-b\nspec:\n  containers:\n    - name: exporter\n      image: ghcr.io/acme/invoice-exporter:1.0.0\n      env:\n        - name: CLOUD_METADATA_ACCESS\n          value: \"enabled\"\n",
+  "/home/ivy/manifests/authentication-audit.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: legacy-auth-proxy\n  namespace: platform\ndata:\n  allowUnauthenticatedHealthAndAdmin: \"true\"\n",
+  "/home/ivy/manifests/audit-policy.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: audit-policy\n  namespace: kube-system\ndata:\n  omitted-resources: \"secrets\"\n  omitted-levels: \"RequestResponse\"\n",
+  "/home/ivy/evidence/rbac-review.txt": "RBAC review \u2014 customer-b\nFinding: RoleBinding report-bot-admin binds ServiceAccount report-bot to ClusterRole cluster-admin.\nExpected answer: report-bot\nRemediation: replace with a namespace-scoped Role containing only required verbs and resources.\n",
+  "/home/ivy/evidence/secret-review.txt": "Secret review \u2014 billing-api\nFinding: the workload manifest references BILLING_TOKEN from Secret billing-api-token; lab evidence confirms it was copied into an environment dump.\nExpected answer: billing-api-token\nRemediation: rotate the lab credential and restrict Secret read access.\n",
+  "/home/ivy/evidence/policy-review.txt": "Admission policy review\nFinding: the Restricted Pod Security baseline is documented but no enforcing admission policy named restricted-workloads is active.\nExpected answer: restricted-workloads\n",
+  "/home/ivy/evidence/network-review.txt": "Network review\nFinding: namespace customer-b has no default-deny ingress policy and billing-api accepts connections from every namespace.\nExpected answer: customer-b\n",
+  "/home/ivy/evidence/component-review.txt": "Exposure review\nFinding: metrics-dashboard is exposed through a public LoadBalancer service without an authentication gateway.\nExpected answer: metrics-dashboard\n",
+  "/home/ivy/evidence/cloud-review.txt": "Cloud identity review\nFinding: invoice-exporter can reach the simulated cloud metadata endpoint and is assigned a broad export role.\nExpected answer: invoice-exporter\nAll cloud endpoints in this lab are simulated; no real cloud credentials exist.\n",
+  "/home/ivy/evidence/auth-review.txt": "Authentication review\nFinding: legacy-auth-proxy enables allowUnauthenticatedHealthAndAdmin=true; the simulated admin route shares this bypass.\nExpected answer: legacy-auth-proxy\nRemediation: remove the bypass and validate issuer, audience, expiry, and signature.\n",
+  "/home/ivy/evidence/audit-review.txt": "Audit review\nFinding: the policy omits secrets metadata and response-level events, leaving Secret reads difficult to investigate.\nExpected answer: secrets-metadata-and-response\n",
+};
+Object.assign(virtualFiles, OWASP_SCENARIO_FILES);
+for (const path of Object.keys(OWASP_SCENARIO_FILES)) directories.add(path.slice(0, path.lastIndexOf("/")));
 
 /* Each workload's manifest, as applied. */
 for (const pod of pods) {
@@ -2108,7 +2126,7 @@ function submit(value: string): string {
     return [
       "CTF COMPLETE",
       "-----------",
-      "All six flags captured and submitted.",
+      "All ten OWASP-aligned flags captured and submitted.",
       "",
       "Your reward is waiting for you:",
       "https://edera.dev/stories/disaggregated-kubernetes-contain-the-blast-radius",
@@ -2168,7 +2186,7 @@ function submit(value: string): string {
       : [
           "CTF COMPLETE",
           "-----------",
-          "All six flags captured and submitted.",
+          "All ten OWASP-aligned flags captured and submitted.",
           "",
           "The final flag was emitted by the zone log stream.",
           "A workload was launched into its own Edera zone.",
@@ -2204,7 +2222,7 @@ async function runCommand(command: string): Promise<string> {
     const stage = currentStage();
 
     if (!stage) {
-      return "All six flags captured. The investigation is complete.";
+      return "All ten OWASP flags captured. The investigation is complete.";
     }
 
     return [
@@ -2711,7 +2729,7 @@ function render(): void {
             ? `
               <section class="completion-card">
                 <span class="eyebrow">INVESTIGATION COMPLETE</span>
-                <h2>A RuntimeClass nobody enforced.</h2>
+                <h2>Ten findings. One hardened cluster.</h2>
                 <p>
                   customer-c/recommendation ran privileged on the host kernel
                   because one field was missing from its spec. Your reward is
