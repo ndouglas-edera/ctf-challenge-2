@@ -1,0 +1,249 @@
+
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap");
+
+:root {
+  --edera-ink: #052f2d;
+  --edera-deep: #003f3d;
+  --edera-teal: #005a57;
+  --edera-teal-2: #08736d;
+  --edera-mint: #effffb;
+  --edera-mint-2: #dff7f0;
+  --edera-cyan: #00e5d4;
+  --edera-lime: #b8ff3c;
+  --edera-white: #f8fffd;
+  --edera-muted: #a8cfca;
+  --edera-line: rgba(0, 72, 69, 0.18);
+}
+
+/* Main EDERA banner */
+.top-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 28px;
+
+  width: min(100%, 1180px);
+  margin: 32px auto 62px;
+  padding: 13px 24px;
+  min-height: 76px;
+  box-sizing: border-box;
+
+  border: 1px solid rgba(0, 63, 61, 0.08);
+  border-radius: 999px;
+
+  background: var(--edera-mint);
+  color: var(--edera-ink);
+
+  box-shadow: 0 16px 45px rgba(0, 0, 0, 0.12);
+  font-family: "Space Grotesk", system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.top-header .logo-link {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 40px;
+  box-sizing: border-box;
+
+  border: 4px solid currentColor;
+  color: var(--edera-ink);
+
+  font-size: 23px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.top-header .edera-free-cta {
+  justify-self: end;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  box-sizing: border-box;
+
+  padding: 12px 22px;
+  border-radius: 999px;
+
+  background: var(--edera-lime);
+  color: var(--edera-ink);
+
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+
+  transition: filter 140ms ease, transform 140ms ease;
+}
+
+.top-header .edera-free-cta:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+/* Optional CTA below the main content */
+.edera-free-bottom {
+  display: flex;
+  justify-content: center;
+  margin: 32px 0 8px;
+}
+
+.edera-free-bottom a {
+  display: inline-block;
+  box-sizing: border-box;
+  padding: 14px 30px;
+  border-radius: 999px;
+
+  background: var(--edera-lime);
+  color: #081716;
+
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-weight: 800;
+  font-size: 16px;
+  text-decoration: none;
+
+  box-shadow: 0 10px 30px rgba(184, 255, 60, 0.25);
+  transition: filter 140ms ease, transform 140ms ease;
+}
+
+.edera-free-bottom a:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+/* EDERA footer */
+.edera-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 9px;
+
+  width: min(100%, 1180px);
+  margin: 28px auto 0;
+  padding: 18px 0 4px;
+  box-sizing: border-box;
+
+  border-top: 1px solid rgba(0, 229, 212, 0.18);
+
+  color: var(--edera-muted);
+
+  font-family: "Space Grotesk", system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 10px;
+  text-align: center;
+}
+
+.edera-footer img {
+  width: 28px;
+  height: 28px;
+
+  flex: 0 0 auto;
+  object-fit: cover;
+
+  border: 1px solid rgba(0, 229, 212, 0.25);
+  border-radius: 50%;
+}
+
+.edera-footer a {
+  color: var(--edera-cyan);
+  text-decoration: none;
+}
+
+.edera-footer a:hover {
+  text-decoration: underline;
+}
+
+/* Mobile layout: keep the logo and CTA on the same row */
+@media (max-width: 720px) {
+  .top-header {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+
+    width: auto;
+    margin: 20px 12px 40px;
+    padding: 12px;
+    min-height: 60px;
+
+    border-radius: 24px;
+  }
+
+  .top-header .logo-link {
+    width: 90px;
+    height: 34px;
+    font-size: 19px;
+  }
+
+  .top-header .edera-free-cta {
+    justify-self: end;
+    align-self: center;
+    min-width: 0;
+    padding: 9px 11px;
+    font-size: 11px;
+    text-align: center;
+  }
+
+  .edera-free-bottom {
+    padding: 0 12px;
+  }
+
+  .edera-free-bottom a {
+    width: 100%;
+    text-align: center;
+  }
+
+  .edera-footer {
+    margin-top: 24px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+/* Extra-small phones */
+@media (max-width: 360px) {
+  .top-header {
+    gap: 7px;
+    padding: 10px;
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+
+  .top-header .logo-link {
+    width: 78px;
+    height: 31px;
+    font-size: 17px;
+    border-width: 3px;
+  }
+
+  .top-header .edera-free-cta {
+    padding: 8px 9px;
+    font-size: 10px;
+  }
+}
+
+.mission-description p {
+  margin: 0 0 1rem;
+  line-height: 1.6;
+}
+
+/* Ensure description is tider on mobile display*/
+@media (max-width: 600px) {
+  .mission-description {
+    font-size: 1rem;
+    line-height: 1.5;
+    max-width: 100%;
+  }
+
+  .mission-description p {
+    margin-bottom: 0.85rem;
+  }
+
+  .mission-description p:last-child {
+    margin-bottom: 0;
+  }
+}
