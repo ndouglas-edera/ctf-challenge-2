@@ -437,6 +437,12 @@ const commandHistory: string[] = [];
 interface TerminalEntry {
   type: "command" | "output" | "html";
   text: string;
+  /*
+   * Command entries capture the prompt at submission time. Otherwise
+   * re-rendering the terminal after `cd` would make older commands appear
+   * to have been entered from the new working directory.
+   */
+  prompt?: string;
 }
 
 const terminalHistory: TerminalEntry[] = [];
@@ -2588,7 +2594,7 @@ function renderTerminal(): string {
                   entry.type === "command"
                     ? `
                       <div class="terminal-command-line">
-                        <span class="terminal-prompt">${escapeHtml(prompt())}</span>
+                        <span class="terminal-prompt">${escapeHtml(entry.prompt ?? prompt())}</span>
                         <span class="terminal-command-text">${escapeHtml(entry.text)}</span>
                       </div>
                     `
@@ -2834,7 +2840,11 @@ function attachTerminalHandlers(): void {
 
     input.disabled = true;
 
-    terminalHistory.push({ type: "command", text: command });
+    terminalHistory.push({
+      type: "command",
+      text: command,
+      prompt: prompt(),
+    });
     render();
 
     const result = await runCommand(command);
