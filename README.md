@@ -114,6 +114,76 @@ cat ~/manifests/network-audit.yaml
 cat ~/evidence/network-review.txt
 ```
 You're looking for the namespace with no default-deny ingress:
+```
 submit customer-b
-
+```
 The source explicitly describes ```customer-b``` as the affected namespace.
+
+### K06: Overly-Exposed Kubernetes Components
+```
+cat ~/manifests/component-exposure.yaml
+```
+```
+cat ~/evidence/component-review.txt
+```
+The service is a public ```LoadBalancer``` named ```metrics-dashboard```, so:
+```
+submit metrics-dashboard
+```
+
+### K07: Misconfigured And Vulnerable Cluster Components
+```
+cat ~/manifests/vulnerable-component.yaml
+```
+Notice:
+```
+image: example.invalid/legacy-metrics:latest
+```
+The workload name is:
+```
+submit legacy-metrics
+```
+The challenge specifically says the objective is to find the workload using an unpinned image tag.
+
+### K08: Cluster-To-Cloud Lateral Movement
+```
+cat ~/manifests/cloud-identity.yaml
+```
+```
+cat ~/evidence/cloud-review.txt
+```
+The affected workload is:
+```
+submit invoice-exporter
+```
+The source also notes that the cloud endpoints in this challenge are simulated, so you aren't interacting with real cloud credentials.
+
+### K09: Broken Authentication Mechanisms
+```
+cat ~/manifests/authentication-audit.yaml
+```
+```
+cat ~/evidence/auth-review.txt
+```
+You'll find:
+```
+allowUnauthenticatedHealthAndAdmin: "true"
+```
+The component is:
+```
+submit legacy-auth-proxy
+```
+
+### K10: Inadequate Logging And Monitoring
+```
+cat ~/manifests/audit-policy.yaml
+```
+```
+cat ~/evidence/audit-review.txt
+```
+The important bits are the omitted ```secrets``` resource and missing ```RequestResponse``` coverage. The expected answer is:
+```
+submit secrets-metadata-and-response
+```
+
+The challenge source lists this as the final stage.
