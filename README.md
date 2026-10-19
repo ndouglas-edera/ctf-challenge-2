@@ -31,7 +31,11 @@ The source explicitly says the manifests and OWASP evidence are under
 A good way to work through this lab is to start with:
 ```
 objective
+```
+```
 ls -la
+```
+```
 tree
 ```
 
