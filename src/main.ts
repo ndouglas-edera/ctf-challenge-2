@@ -8,6 +8,7 @@ interface Pod {
   node: string;
   status: string;
   privileged: boolean;
+  allowPrivilegeEscalation?: boolean;
   runtimeClass: string | null;
   annotations: Record<string, string>;
   zone: string | null;
@@ -111,32 +112,35 @@ const pods: Pod[] = [
     namespace: "customer-d",
     app: "analytics-batch",
     node: NODE.name,
-    status: "ContainerCreating",
+    status: "Running",
     privileged: false,
     runtimeClass: "edera",
     annotations: {
       "dev.edera/kernel": ZONE_KERNEL,
-      "dev.edera/initial-memory-request": "24576",
+      "dev.edera/initial-memory-request": "4096",
     },
     zone: "zone-analytics-d",
     image: "ghcr.io/acme/analytics-batch:0.9.0",
   },
   {
     /*
-     * The finding. Privileged, and the RuntimeClass was never set, so this
-     * container runs straight on the host kernel with elevated privileges.
+     * The finding: this workload explicitly permits privilege escalation.
+     * It still runs in an Edera zone, so the exercise is about workload
+     * hardening rather than a missing RuntimeClass.
      */
     name: "recommendation-c",
     namespace: "customer-c",
     app: "recommendation",
     node: NODE.name,
     status: "Running",
-    privileged: true,
-    runtimeClass: null,
+    privileged: false,
+    allowPrivilegeEscalation: true,
+    runtimeClass: "edera",
     annotations: {
+      "dev.edera/kernel": ZONE_KERNEL,
       "dev.edera/initial-memory-request": "2048",
     },
-    zone: null,
+    zone: "zone-recommendation-c",
     image: "ghcr.io/acme/recommendation:2.2.0",
   },
 ];
@@ -172,21 +176,23 @@ const zones: Zone[] = [
   {
     name: "zone-analytics-d",
     id: "z-9ea022",
-    state: "failed",
+    state: "ready",
     cpus: 4,
-    memory: "24576MB",
+    memory: "4096MB",
     kernel: ZONE_KERNEL,
     pod: "analytics-batch-d",
-    failure: [
-      "zone create requested 24576MB",
-      "node worker-02 allocatable memory: 14Gi",
-      "insufficient memory to start zone",
-      "",
-      "Reduce dev.edera/initial-memory-request on the pod",
-      "or schedule the workload on a larger node.",
-    ],
   },
 ];
+
+zones.push({
+  name: "zone-recommendation-c",
+  id: "z-5a81c2",
+  state: "ready",
+  cpus: 2,
+  memory: "2048MB",
+  kernel: ZONE_KERNEL,
+  pod: "recommendation-c",
+});
 
 /*
  * The arrays above are the lab's initial cluster state. `kubectl apply -f`
@@ -330,11 +336,11 @@ interface Stage {
 const stages: Stage[] = [
   {
     title: "K01 · Insecure workload configurations",
-    objective: "Identify the workload bypassing Edera isolation.",
-    brief: ["Inspect pod security settings and RuntimeClass assignments.", "Submit the unsafe pod name."],
+    objective: "Find the pod that allows privilege escalation.",
+    brief: ["Run `kubectl get pods -A`, then inspect pod security settings with `kubectl describe pod <name> -n <namespace>` or `kubectl get pod <name> -n <namespace> -o yaml`.", "Look for `allowPrivilegeEscalation: true` and submit that pod name."],
     answers: ["recommendation-c", "customer-c/recommendation-c"],
     flag: "EDERA{K01_INSECURE_WORKLOAD}",
-    reward: ["Privileged workloads without the intended runtime increase blast radius.", "Enforce workload security baselines."],
+    reward: ["`allowPrivilegeEscalation: true` permits a process to gain privileges beyond its parent, including through setuid programs.", "Set `allowPrivilegeEscalation: false` and apply a consistent workload security baseline."],
   },
   {
     title: "K02 · Overly permissive authorization",
@@ -416,6 +422,7 @@ interface GameState {
   commandCount: number;
   /* Pods the player has read in detail, used to reveal the diagram. */
   inspected: Set<string>;
+  escalationDescribed: Set<string>;
   zonesListed: boolean;
   cwd: string;
   namespace: string;
@@ -426,6 +433,7 @@ const state: GameState = {
   captured: [],
   commandCount: 0,
   inspected: new Set<string>(),
+  escalationDescribed: new Set<string>(),
   zonesListed: false,
   cwd: "/home/ivy",
   namespace: "default",
@@ -451,6 +459,30 @@ const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
   throw new Error("Application root not found.");
+}
+
+
+/** Per-workload hardening profiles used by the simulated manifests. */
+function securityProfileFor(pod: Pick<Pod, "name" | "allowPrivilegeEscalation">) {
+  const profiles: Record<string, {
+    runAsNonRoot: boolean;
+    runAsUser: number;
+    readOnlyRootFilesystem: boolean;
+    dropCapabilities: boolean;
+    seccompProfile: "RuntimeDefault" | "Localhost";
+    automountServiceAccountToken: boolean;
+  }> = {
+    "image-processor-a": { runAsNonRoot: true, runAsUser: 10001, readOnlyRootFilesystem: true, dropCapabilities: true, seccompProfile: "RuntimeDefault", automountServiceAccountToken: false },
+    "billing-api-b": { runAsNonRoot: true, runAsUser: 10002, readOnlyRootFilesystem: true, dropCapabilities: true, seccompProfile: "RuntimeDefault", automountServiceAccountToken: false },
+    "edera-ebpf-test": { runAsNonRoot: true, runAsUser: 10003, readOnlyRootFilesystem: false, dropCapabilities: true, seccompProfile: "RuntimeDefault", automountServiceAccountToken: false },
+    "analytics-batch-d": { runAsNonRoot: true, runAsUser: 10004, readOnlyRootFilesystem: true, dropCapabilities: true, seccompProfile: "RuntimeDefault", automountServiceAccountToken: false },
+    "recommendation-c": { runAsNonRoot: true, runAsUser: 10005, readOnlyRootFilesystem: true, dropCapabilities: true, seccompProfile: "RuntimeDefault", automountServiceAccountToken: false },
+    "gpu-workload": { runAsNonRoot: true, runAsUser: 10006, readOnlyRootFilesystem: false, dropCapabilities: true, seccompProfile: "RuntimeDefault", automountServiceAccountToken: false },
+  };
+  return {
+    allowPrivilegeEscalation: pod.allowPrivilegeEscalation ?? false,
+    ...(profiles[pod.name] ?? { runAsNonRoot: true, runAsUser: 1000, readOnlyRootFilesystem: true, dropCapabilities: true, seccompProfile: "RuntimeDefault" as const, automountServiceAccountToken: false }),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -779,11 +811,19 @@ function manifestFor(pod: Pod): string {
     ),
     "spec:",
     ...(pod.runtimeClass ? [`  runtimeClassName: ${pod.runtimeClass}`] : []),
+    `  automountServiceAccountToken: ${securityProfileFor(pod).automountServiceAccountToken}`,
     "  containers:",
     `  - name: ${pod.app}`,
     `    image: ${pod.image}`,
     "    securityContext:",
     `      privileged: ${pod.privileged}`,
+    ...Object.entries(securityProfileFor(pod)).filter(([key]) => key !== "automountServiceAccountToken").map(([key, value]) =>
+      key === "dropCapabilities"
+        ? `      capabilities:\n        drop:\n          - ALL`
+        : key === "seccompProfile"
+          ? `      seccompProfile:\n        type: ${value}`
+          : `      ${key}: ${value}`,
+    ),
   ].join("\n");
 }
 
@@ -1156,6 +1196,9 @@ function describePod(name: string | undefined, flags: KubectlFlags): string {
   if (!pod) return notFound("pods", name);
 
   state.inspected.add(pod.name);
+  if (securityProfileFor(pod).allowPrivilegeEscalation) {
+    state.escalationDescribed.add(pod.name);
+  }
 
   const annotationLines = Object.entries(pod.annotations).map(
     ([key, value], index) =>
@@ -1183,6 +1226,10 @@ function describePod(name: string | undefined, flags: KubectlFlags): string {
     `  ${pod.app}:`,
     `    Image:       ${pod.image}`,
     `    Privileged:  ${pod.privileged}`,
+    `    AllowPrivilegeEscalation: ${securityProfileFor(pod).allowPrivilegeEscalation}`,
+    `    RunAsNonRoot: ${securityProfileFor(pod).runAsNonRoot}`,
+    `    ReadOnlyRootFilesystem: ${securityProfileFor(pod).readOnlyRootFilesystem}`,
+    `    SeccompProfile: ${securityProfileFor(pod).seccompProfile}`,
     "",
     "Events:",
     pod.status === "Running"
@@ -1216,11 +1263,19 @@ function getPodYaml(name: string | undefined, flags: KubectlFlags): string {
     ),
     "spec:",
     ...(pod.runtimeClass ? [`  runtimeClassName: ${pod.runtimeClass}`] : []),
+    `  automountServiceAccountToken: ${securityProfileFor(pod).automountServiceAccountToken}`,
     "  containers:",
     `  - name: ${pod.app}`,
     `    image: ${pod.image}`,
     "    securityContext:",
     `      privileged: ${pod.privileged}`,
+    ...Object.entries(securityProfileFor(pod)).filter(([key]) => key !== "automountServiceAccountToken").map(([key, value]) =>
+      key === "dropCapabilities"
+        ? "      capabilities:\n        drop:\n          - ALL"
+        : key === "seccompProfile"
+          ? `      seccompProfile:\n        type: ${value}`
+          : `      ${key}: ${value}`,
+    ),
     "status:",
     `  phase: ${pod.status}`,
   ].join("\n");
@@ -1417,6 +1472,10 @@ function parsePodManifest(content: string): Pod | undefined {
   const privilegedMatch =
     /^[ \t]+privileged:[ \t]*(true|false)[ \t]*$/m.exec(content);
   const privileged = privilegedMatch?.[1] === "true";
+  const escalationMatch = /^[ \t]+allowPrivilegeEscalation:[ \t]*(true|false)[ \t]*$/m.exec(content);
+  const allowPrivilegeEscalation = escalationMatch
+    ? escalationMatch[1] === "true"
+    : (podTemplates.get(name)?.allowPrivilegeEscalation ?? false);
 
   const annotations: Record<string, string> = {};
   const annotationSection = content.match(
@@ -1445,6 +1504,7 @@ function parsePodManifest(content: string): Pod | undefined {
     node: template?.node ?? NODE.name,
     status: template?.status ?? "Running",
     privileged,
+    allowPrivilegeEscalation,
     runtimeClass,
     annotations,
     zone: template?.zone ?? null,
@@ -1618,6 +1678,7 @@ function removePod(pod: Pod): void {
   }
 
   state.inspected.delete(pod.name);
+  state.escalationDescribed.delete(pod.name);
 }
 
 function deletePod(name: string | undefined, flags: KubectlFlags): string {
@@ -2357,32 +2418,33 @@ async function runCommand(command: string): Promise<string> {
  * absence is the clue the player is supposed to spot for themselves.
  */
 function podLayer(pod: Pod): "zone" | "host" | "unknown" {
-  if (state.inspected.has(pod.name)) {
-    return pod.runtimeClass && pod.zone ? "zone" : "host";
-  }
-
-  if (state.zonesListed && pod.zone) return "zone";
-
+  // All initial workloads are zone-backed. Inspection reveals the security
+  // finding; it does not imply that the workload is running on the host.
+  if (pod.runtimeClass && pod.zone) return "zone";
+  if (state.inspected.has(pod.name)) return "host";
   return "unknown";
 }
 
 function renderArchitecture(): string {
-  const exposed = pods.filter((pod) => podLayer(pod) === "host");
+  const exposed = pods.filter(
+    (pod) => state.escalationDescribed.has(pod.name) && securityProfileFor(pod).allowPrivilegeEscalation,
+  );
   const found = exposed.length > 0;
 
   const cards = pods
     .map((pod) => {
       const layer = podLayer(pod);
       const zone = pod.zone ? findZone(pod.zone) : undefined;
-
-      const caption =
-        layer === "unknown"
+      const flagged = exposed.some((candidate) => candidate.name === pod.name);
+      const caption = flagged
+        ? "privilege escalation enabled"
+        : layer === "unknown"
           ? "runtime not yet inspected"
           : layer === "zone"
             ? `${zone?.name} · ${zone?.state}`
             : "no zone · host kernel";
 
-      return `<div class="tenant-card layer-${layer}"><span class="tenant-dot"></span><strong>${pod.namespace}/${pod.app}</strong><span>${caption}</span></div>`;
+      return `<div class="tenant-card layer-${layer} ${flagged ? "tenant-escalation" : ""}"><span class="tenant-dot"></span><strong>${pod.namespace}/${pod.app}</strong><span>${caption}</span></div>`;
     })
     .join("");
 
@@ -2391,57 +2453,32 @@ function renderArchitecture(): string {
       <div class="section-heading">
         <div>
           <span class="eyebrow">CURRENT ARCHITECTURE</span>
-          <h2>Mixed-runtime node</h2>
+          <h2>Edera-isolated workloads</h2>
         </div>
-        <span class="status-pill ${
-          found ? "status-danger" : "status-unknown"
-        }">
-          ${
-            found
-              ? "UNPROTECTED WORKLOAD"
-              : pods.length > 0
-                ? `${pods.length} WORKLOAD${pods.length === 1 ? "" : "S"}`
-                : "NO WORKLOADS"
-          }
+        <span class="status-pill ${found ? "status-danger" : "status-unknown"}">
+          ${found ? "PRIVILEGE ESCALATION ENABLED" : `${pods.length} RUNNING WORKLOAD${pods.length === 1 ? "" : "S"}`}
         </span>
       </div>
 
-      ${
-        pods.length > 0
-          ? `<div class="tenant-grid">${cards}</div>`
-          : `
-            <div class="architecture-empty">
-              <strong>NO WORKLOADS SCHEDULED</strong>
-              <span>Apply a manifest from <code>~/manifests</code> to restore a workload.</span>
-            </div>
-          `
-      }
+      ${pods.length > 0
+        ? `<div class="tenant-grid">${cards}</div>`
+        : `<div class="architecture-empty"><strong>NO WORKLOADS SCHEDULED</strong><span>Apply a manifest from <code>~/manifests</code> to restore a workload.</span></div>`}
 
       <div class="kernel-connector"></div>
-
       <div class="kernel-box ${found ? "kernel-compromised" : ""}">
         <strong>HOST KERNEL</strong>
         <span>${NODE.kernelVersion} · ${NODE.name}</span>
       </div>
 
-      ${
-        found
-          ? `
-            <div class="blast-radius">
-              <span class="blast-icon">!</span>
-              <div>
-                <strong>${exposed
-                  .map((pod) => `${pod.namespace}/${pod.app}`)
-                  .join(", ")} has no zone</strong>
-                <span>
-                  It runs directly on the host kernel shown above, with
-                  privileged access, alongside every zone-backed tenant.
-                </span>
-              </div>
-            </div>
-          `
-          : ""
-      }
+      ${found ? `
+        <div class="blast-radius">
+          <span class="blast-icon">!</span>
+          <div>
+            <strong>${exposed.map((pod) => `${pod.namespace}/${pod.name}`).join(", ")} permits privilege escalation</strong>
+            <span>The workload is shown in the Edera architecture because its security context allows escalation. The Edera zone remains a separate kernel boundary.</span>
+            <span>The <code>allowPrivilegeEscalation: false</code> setting enforces the <code>no_new_privs</code> kernel flag, which prevents a process from gaining more privileges than its parent.</span>
+          </div>
+        </div>` : ""}
     </section>
   `;
 }
@@ -2737,8 +2774,8 @@ function render(): void {
                 <span class="eyebrow">INVESTIGATION COMPLETE</span>
                 <h2>Ten findings. One hardened cluster.</h2>
                 <p>
-                  customer-c/recommendation ran privileged on the host kernel
-                  because one field was missing from its spec. Your reward is
+                  customer-c/recommendation allowed privilege escalation because
+                  its container security context was misconfigured. Your reward is
                   waiting at
                   <a
                     href="https://edera.dev/stories/disaggregated-kubernetes-contain-the-blast-radius"
