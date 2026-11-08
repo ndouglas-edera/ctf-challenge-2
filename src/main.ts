@@ -403,11 +403,17 @@ const stages: Stage[] = [
   },
   {
     title: "K06 · Overly exposed Kubernetes components",
-    objective: "Identify the management component exposed beyond the trusted network.",
-    brief: ["Inspect ~/manifests/component-exposure.yaml and ~/evidence/component-review.txt.", "Submit the exposed component name."],
-    answers: ["metrics-dashboard"],
+    objective: "The API server tells anyone who asks, no credentials needed. What exact version does it leak?",
+    brief: ["Read up on the Kubernetes API: https://kubernetes.io/docs/concepts/overview/kubernetes-api/", "Submit the exact version string."],
+    answers: ["v1.30.2", "1.30.2"],
+    nudges: {
+      "v1.34.1": "That's your kubectl client's version. What does the API server report?",
+      "1.34.1": "That's your kubectl client's version. What does the API server report?",
+      "1.30": "Close. Which exact patch release?",
+      "v1.30": "Close. Which exact patch release?",
+    },
     flag: "EDERA{K06_EXPOSED_COMPONENT}",
-    reward: ["Management endpoints should not be public by default.", "Restrict exposure and require authentication."],
+    reward: ["/version answered an anonymous request with the exact build: v1.30.2.", "That release is out of support, so an attacker can match it against known CVEs.", "Keep the API server off untrusted networks, and treat version data as reconnaissance."],
   },
   {
     title: "K07 · Misconfigured and vulnerable components",
@@ -690,6 +696,10 @@ const helpSections: HelpSection[] = [
         command: "kubectl logs <name> -n <namespace> [--tail=<n>]",
         description: "Print a pod's container logs (stdout and stderr).",
       },
+      {
+        command: "kubectl cluster-info",
+        description: "Show where the Kubernetes control plane is running.",
+      },
     ],
   },
   {
@@ -751,6 +761,7 @@ const helpSections: HelpSection[] = [
       { command: "uname -a", description: "Display kernel and system information." },
       { command: "env", description: "Display the simulated node environment." },
       { command: "ps", description: "List simulated running processes." },
+      { command: "curl [-sk] <url>", description: "Make an HTTP request from the node." },
       {
         command: "history",
         description: "Recall previously entered commands, or use ↑ / ↓.",
@@ -876,6 +887,7 @@ const directories = new Set<string>([
   "/home",
   "/home/ivy",
   "/home/ivy/manifests",
+  "/home/ivy/.kube",
   "/proc",
   "/var",
   "/var/lib",
@@ -949,6 +961,27 @@ const virtualFiles: Record<string, string> = {
   ].join("\n"),
 
   "/var/lib/edera/protect/daemon.socket": "",
+
+  "/home/ivy/.kube/config": [
+    "apiVersion: v1",
+    "kind: Config",
+    "clusters:",
+    "- cluster:",
+    "    certificate-authority-data: bGFiLW9ubHktbm90LWEtcmVhbC1jYQo=",
+    "    server: https://10.10.0.10:6443",
+    "  name: edera-lab",
+    "contexts:",
+    "- context:",
+    "    cluster: edera-lab",
+    "    user: ivy",
+    "  name: ivy@edera-lab",
+    "current-context: ivy@edera-lab",
+    "users:",
+    "- name: ivy",
+    "  user:",
+    "    client-certificate-data: bGFiLW9ubHktbm90LWEtcmVhbC1jZXJ0Cg==",
+    "    client-key-data: bGFiLW9ubHktbm90LWEtcmVhbC1rZXkK",
+  ].join("\n"),
 
   "/home/ivy/.profile": [
     "# ivy engineer, worker-02",
@@ -1240,6 +1273,9 @@ function kubectlUsage(): string {
     "  kubectl delete -f <file|directory>",
     "  kubectl exec <name> -n <namespace> -- <command>",
     "  kubectl logs <name> -n <namespace> [--tail=<n>]",
+    "  kubectl version",
+    "  kubectl cluster-info",
+    "  kubectl get --raw <path>",
   ].join("\n");
 }
 
@@ -1520,6 +1556,9 @@ function kubectlExec(
   const pod = resolvePod(name, flags);
 
   if (!pod) return notFound("pods", name);
+
+  const command = rest.trim().split(/\s+/);
+  if (command[0] === "curl") return curlCommand(command.slice(1), true);
 
   const wantsKernel = /proc\/version|uname/.test(rest);
 
@@ -3414,6 +3453,162 @@ function describeNetworkPolicy(policy: NetworkPolicyObject): string {
   ].join("\n");
 }
 
+/* -------------------------------------------------------------------------- */
+/* API server exposure (K06)                                                  */
+/*                                                                            */
+/* As in a default cluster, the API server answers /version, /healthz,       */
+/* /livez and /readyz for anonymous callers (system:public-info-viewer), and  */
+/* 403s everything else. /version leaks the exact, out-of-support build.      */
+/* Reachable from the node (10.10.0.10:6443) and from inside any pod via      */
+/* kubernetes.default.svc.                                                    */
+/* -------------------------------------------------------------------------- */
+
+const API_SERVER = { host: "10.10.0.10", port: 6443, serviceIp: "10.96.0.1" };
+const CLIENT_VERSION = "v1.34.1";
+
+const SERVER_VERSION = {
+  major: "1",
+  minor: "30",
+  gitVersion: "v1.30.2",
+  gitCommit: "39683505b630ff2121012f3c5b16215a1449d5ed",
+  gitTreeState: "clean",
+  buildDate: "2024-06-11T20:21:00Z",
+  goVersion: "go1.22.4",
+  compiler: "gc",
+  platform: "linux/amd64",
+};
+
+const ANONYMOUS_PATHS = new Set(["/version", "/healthz", "/livez", "/readyz"]);
+
+function apiResponse(path: string): { status: number; body: string } {
+  const clean = path.split("?")[0].replace(/\/+$/, "") || "/";
+
+  if (clean === "/version") {
+    return { status: 200, body: JSON.stringify(SERVER_VERSION, null, 2) };
+  }
+  if (ANONYMOUS_PATHS.has(clean)) return { status: 200, body: "ok" };
+
+  return {
+    status: 403,
+    body: JSON.stringify(
+      {
+        kind: "Status",
+        apiVersion: "v1",
+        metadata: {},
+        status: "Failure",
+        message: `forbidden: User "system:anonymous" cannot get path "${clean}"`,
+        reason: "Forbidden",
+        details: {},
+        code: 403,
+      },
+      null,
+      2,
+    ),
+  };
+}
+
+const CURL_TLS_ERROR = [
+  "curl: (60) SSL certificate problem: unable to get local issuer certificate",
+  "More details here: https://curl.se/docs/sslcerts.html",
+  "",
+  "curl failed to verify the legitimacy of the server and therefore could not",
+  "establish a secure connection to it. To learn more about this situation and",
+  "how to fix it, please visit the web page mentioned above.",
+].join("\n");
+
+/*
+ * A small curl: enough to talk to the API server anonymously. `inPod` adds
+ * the in-cluster service names and the mounted service account CA.
+ */
+function curlCommand(args: string[], inPod: boolean): string {
+  const valueFlags = new Set(["-H", "--header", "-X", "--request", "-o", "--output", "--cacert", "-d", "--data", "-u", "--user"]);
+  let url: string | undefined;
+  let insecure = false;
+  let includeHeaders = false;
+  let caCert: string | undefined;
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (valueFlags.has(arg)) {
+      if (arg === "--cacert") caCert = args[index + 1];
+      index++;
+      continue;
+    }
+    if (arg === "-k" || arg === "--insecure") insecure = true;
+    else if (arg === "-i" || arg === "--include") includeHeaders = true;
+    else if (/^-[a-zA-Z]+$/.test(arg)) {
+      if (arg.includes("k")) insecure = true;
+      if (arg.includes("i")) includeHeaders = true;
+    } else if (!arg.startsWith("-")) url = url ?? arg.replace(/^['"]|['"]$/g, "");
+  }
+
+  if (!url) return "curl: try 'curl --help' or 'curl --manual' for more information";
+
+  const match = /^(?:(https?):\/\/)?([^/:]+)(?::(\d+))?(\/.*)?$/.exec(url);
+  if (!match) return `curl: (3) URL rejected: Malformed input to a URL function`;
+
+  const scheme = match[1] ?? "http";
+  const host = match[2];
+  const port = Number(match[3] ?? (scheme === "https" ? 443 : 80));
+  const path = match[4] ?? "/";
+
+  const inClusterNames = ["kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local"];
+  const isApiServer =
+    (host === API_SERVER.host && port === API_SERVER.port) ||
+    (inPod && (inClusterNames.includes(host) || host === API_SERVER.serviceIp) && port === 443);
+
+  if (!isApiServer) {
+    if (!inPod && inClusterNames.includes(host)) return `curl: (6) Could not resolve host: ${host}`;
+    if (/^[\d.]+$/.test(host) || host === "localhost") {
+      return `curl: (7) Failed to connect to ${host} port ${port} after 3 ms: Couldn't connect to server`;
+    }
+    return `curl: (6) Could not resolve host: ${host}`;
+  }
+
+  if (scheme === "http") return "Client sent an HTTP request to an HTTPS server.";
+
+  const trustedCa = inPod && caCert === "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+  if (!insecure && !trustedCa) return CURL_TLS_ERROR;
+
+  const response = apiResponse(path);
+  const contentType = response.body.startsWith("{") ? "application/json" : "text/plain; charset=utf-8";
+  const headers = [
+    `HTTP/2 ${response.status} `,
+    "audit-id: 5e0c7a1d-2f43-4b8e-9c61-0d7f3a9b2e84",
+    "cache-control: no-cache, private",
+    `content-type: ${contentType}`,
+    "x-kubernetes-pf-flowschema-uid: 8a6b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d",
+    "",
+  ];
+
+  return [...(includeHeaders ? headers : []), response.body].join("\n");
+}
+
+function kubectlVersion(): string {
+  return [
+    `Client Version: ${CLIENT_VERSION}`,
+    "Kustomize Version: v5.7.1",
+    `Server Version: ${SERVER_VERSION.gitVersion}`,
+    "Warning: version difference between client (1.34) and server (1.30) exceeds the supported minor version skew of +/-1",
+  ].join("\n");
+}
+
+function kubectlClusterInfo(): string {
+  return [
+    `Kubernetes control plane is running at https://${API_SERVER.host}:${API_SERVER.port}`,
+    `CoreDNS is running at https://${API_SERVER.host}:${API_SERVER.port}/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy`,
+    "",
+    "To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.",
+  ].join("\n");
+}
+
+function kubectlGetRaw(path: string | undefined): string {
+  if (!path) return "error: --raw requires a path, e.g. kubectl get --raw /version";
+  if (path === "/version") return JSON.stringify(SERVER_VERSION, null, 2);
+  if (["/healthz", "/livez", "/readyz"].includes(path)) return "ok";
+  return `Error from server (NotFound): the server could not find the requested resource`;
+}
+
 function kubectl(raw: string): string {
   const tokens = raw.split(/\s+/).slice(1);
   const manifestAction = parseManifestAction(tokens);
@@ -3440,6 +3635,12 @@ function kubectl(raw: string): string {
   if (!verb) return kubectlUsage();
 
   if (verb === "auth") return kubectlAuth(head, flags);
+  if (verb === "version") return kubectlVersion();
+  if (verb === "cluster-info") return kubectlClusterInfo();
+  if (verb === "get" && head.some((token) => token === "--raw" || token.startsWith("--raw="))) {
+    const inline = head.find((token) => token.startsWith("--raw="));
+    return kubectlGetRaw(inline ? inline.slice(6) : head[head.indexOf("--raw") + 1]);
+  }
   if (verb === "logs" || verb === "log") return kubectlLogs(head, rawResource, flags);
   if (verb === "label") return kubectlLabel(positional, head);
 
@@ -4104,6 +4305,7 @@ async function runCommand(command: string): Promise<string> {
   }
 
   if (binary === "cat") return readFile(args[0]);
+  if (binary === "curl") return curlCommand(args, false);
 
   if (binary === "tree") {
     const path = resolvePath(args[0] ?? state.cwd);
