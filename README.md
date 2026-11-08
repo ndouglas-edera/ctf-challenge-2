@@ -164,6 +164,11 @@ kubectl cluster-info
 - In-cluster names only resolve from inside pods, as in a real cluster, which shows that every tenant can reach the API.
 - ```kubectl version``` and ```kubectl get --raw /version``` also print the server version, because that’s what real ```kubectl``` does.
 - A player can get the answer using their own credentials without ever making the anonymous request.
+
+```
+submit v1.30.2
+```
+
 <br/><br/>
 
 ### K07: Misconfigured And Vulnerable Cluster Components
