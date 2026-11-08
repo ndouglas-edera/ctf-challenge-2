@@ -125,11 +125,13 @@ submit bt-lab-7f3a9c2e5d1b
 ### K04: Lack Of Cluster-Level Policy Enforcement
 - The objective says a tenant workload is **BLOCKED**
 - ```kubectl get deploy -A``` shows ```customer-e/payments-worker``` at ```0/1```.
-- ```kubectl get events -n customer-e``` shows Kyverno denying each pod creation and names the ```edera-tenant-onboarding``` policy, but not the label.
+- ```kubectl get events -n customer-e``` shows Kyverno denying each pod creation.
+- It names the ```edera-tenant-onboarding``` policy, but does not name the label.
 - The player reads the rule with ```kubectl get cpol edera-tenant-onboarding -o yaml```.
 - Pods are denied unless the namespace has ```edera.dev/isolation: enforced```.
 - ```kubectl get ns --show-labels``` confirms ```customer-e``` is the only namespace without it.
-- ```kubectl label ns customer-e edera.dev/isolation=enforced```. The ReplicaSet retry is admitted, the pod starts ```Running``` in its own Edera zone, and the flag is captured.
+- ```kubectl label ns customer-e edera.dev/isolation=enforced```.
+- The ReplicaSet retry is admitted, the pod starts ```Running``` in its own Edera zone, and the flag is captured.
 <br/><br/>
 
 ### K05: Missing Network Segmentation Controls
