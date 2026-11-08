@@ -395,7 +395,7 @@ const stages: Stage[] = [
     reward: ["Anyone with `get` on `pods/log`, or access to your log platform, could read that token.", "Never log configuration or environment values; rotate the credential and restrict `pods/log` access."],
   },
   {
-    title: "K04 · Lack of cluster-level policy enforcement",
+    title: "K04 · Lack of cluster-level policies",
     objective: "A tenant's workload is being blocked from starting. Find out why and get it running.",
     brief: ["Read up on Kyverno validate rules: https://release-1-18-0.kyverno.io/docs/policy-types/cluster-policy/validate/", "The flag is captured automatically once the workload is admitted."],
     answers: ["edera.dev/isolation=enforced"],
@@ -417,7 +417,7 @@ const stages: Stage[] = [
     reward: ["billing-api-ingress selected app=biling-api, which matches no pods.", "With nothing selected, billing-api accepted traffic from every namespace.", "A selector typo fails silently: pair a default-deny with allow rules, and test the flows."],
   },
   {
-    title: "K06 · Overly exposed Kubernetes components",
+    title: "K06 · Overly-exposed components",
     objective: "The API server tells anyone who asks, no credentials needed. What exact version does it leak?",
     brief: ["Read up on the Kubernetes API: https://kubernetes.io/docs/concepts/overview/kubernetes-api/", "Submit the exact version string."],
     answers: ["v1.30.2", "1.30.2"],
@@ -431,7 +431,7 @@ const stages: Stage[] = [
     reward: ["/version answered an anonymous request with the exact build: v1.30.2.", "That release is out of support, so an attacker can match it against known CVEs.", "Keep the API server off untrusted networks, and treat version data as reconnaissance."],
   },
   {
-    title: "K07 · Misconfigured and vulnerable components",
+    title: "K07 · Vulnerable components",
     objective: "An end-of-life PHP image with known CVEs is sitting in the node's Edera image cache. Find it and remove it.",
     brief: ["Read up on managing images with the protect CLI: https://docs.edera.dev/guides/cli-user-guide/#removing-images", "The flag is captured automatically once the image is removed."],
     answers: ["sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3aba831fc7b44b"],
