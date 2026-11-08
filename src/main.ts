@@ -2494,7 +2494,6 @@ function renderArchitecture(): string {
           <span class="blast-icon">!</span>
           <div>
             <strong>${exposed.map((pod) => `${pod.namespace}/${pod.name}`).join(", ")} permits privilege escalation</strong>
-            <span>The workload is shown in the Edera architecture because its security context allows escalation. The Edera zone remains a separate kernel boundary.</span>
             <span>The <code>allowPrivilegeEscalation: false</code> setting enforces the <code>no_new_privs</code> kernel flag, which prevents a process from gaining more privileges than its parent.</span>
           </div>
         </div>` : ""}
