@@ -181,6 +181,10 @@ submit v1.30.2
 - ```protect image remove php:7.4.33-apache``` returns an error explaining that images are removed by digest.
 - Removing zone kernel or a running image is refused with “**in use by zone …**”, so players can’t break lab.
 - ```protect image pull <ref>``` lets a player put back anything they removed by accident.
+
+```
+protect image remove sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3aba831fc7b44b
+```
 <br/><br/>
 
 ### K08: Cluster-To-Cloud Lateral Movement
