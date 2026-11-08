@@ -52,6 +52,14 @@ kubectl get pods -A -o wide
 ```
 kubectl describe pod recommendation-c -n customer-c
 ```
+This describes all pods across ```all``` namespaces
+```
+kubectl describe pods --all-namespaces
+```
+If you only want pods in the current ```default``` namespace:
+```
+kubectl describe pods
+```
 You're looking for the pod that is **privileged** and/or bypassing the Edera runtime isolation.
 ```
 kubectl describe pod recommendation-c -n customer-c
