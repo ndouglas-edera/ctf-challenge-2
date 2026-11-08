@@ -57,6 +57,22 @@ const NODE = {
   },
 };
 
+/* K04 namespace onboarding; defined early because startup manifests are applied below. */
+const ONBOARDING_KEY = "edera.dev/isolation";
+const ONBOARDING_VALUE = "enforced";
+const ONBOARDING_POLICY = "edera-tenant-onboarding";
+const ONBOARDING_RULE = "require-onboarded-namespace";
+const BLOCKED_NAMESPACE = "customer-e";
+
+const namespaceLabels: Record<string, Record<string, string>> = {
+  ...Object.fromEntries(
+    ["default", "customer-a", "customer-b", "customer-c", "customer-d", "platform"].map(
+      (namespace) => [namespace, { [ONBOARDING_KEY]: ONBOARDING_VALUE }],
+    ),
+  ),
+  [BLOCKED_NAMESPACE]: { team: BLOCKED_NAMESPACE },
+};
+
 const ZONE_KERNEL = "ghcr.io/edera-dev/zone-kernel:6.15";
 const ZONE_KERNEL_EBPF = "ghcr.io/edera-dev/zone-kernel:6.15-ebpf";
 const ZONE_KERNEL_NVIDIA = "ghcr.io/edera-dev/zone-kernel:6.15-nvidia";
@@ -335,6 +351,8 @@ interface Stage {
   reward: string[];
 }
 
+const K04_FLAG = "EDERA{K04_POLICY_ENFORCED}";
+
 const stages: Stage[] = [
   {
     title: "K01 · Insecure workload configurations",
@@ -363,11 +381,11 @@ const stages: Stage[] = [
   },
   {
     title: "K04 · Lack of cluster-level policy enforcement",
-    objective: "Identify the missing admission policy.",
-    brief: ["Inspect ~/manifests/policy-audit.yaml and ~/evidence/policy-review.txt.", "Submit the missing policy name."],
-    answers: ["restricted-workloads"],
-    flag: "EDERA{K04_MISSING_POLICY}",
-    reward: ["Admission controls prevent unsafe workloads before they run.", "Enforce policy consistently and test denials."],
+    objective: "A tenant's workload is being blocked from starting. Find out why and get it running.",
+    brief: ["Read up on cluster-level policy enforcement: https://kubernetes-top10.owasp.org/2025/en/src/K04-Lack-Of-Cluster-Level-Policy-Enforcement.html", "The flag is captured automatically once the workload is admitted."],
+    answers: ["edera.dev/isolation=enforced"],
+    flag: "EDERA{K04_POLICY_ENFORCED}",
+    reward: ["edera-tenant-onboarding denied every Pod in customer-e until the namespace opted in.", "Once labelled, payments-worker was admitted and started in its own Edera zone.", "Enforce admission policy cluster-wide, rather than relying on convention."],
   },
   {
     title: "K05 · Missing network segmentation",
@@ -428,6 +446,8 @@ interface GameState {
   escalationDescribed: Set<string>;
   /* Secrets the player has listed or described ("namespace/name"). */
   secretsSeen: Set<string>;
+  /* Whether the player has come across the blocked customer-e tenant. */
+  blockedTenantSeen: boolean;
   zonesListed: boolean;
   cwd: string;
   namespace: string;
@@ -440,6 +460,7 @@ const state: GameState = {
   inspected: new Set<string>(),
   escalationDescribed: new Set<string>(),
   secretsSeen: new Set<string>(),
+  blockedTenantSeen: false,
   zonesListed: false,
   cwd: "/home/ivy",
   namespace: "default",
@@ -586,8 +607,24 @@ const helpSections: HelpSection[] = [
         description: "Describe every pod in the current namespace, or across all namespaces.",
       },
       {
-        command: "kubectl get namespaces",
-        description: "List the namespaces in the cluster.",
+        command: "kubectl get namespaces [--show-labels]",
+        description: "List the namespaces in the cluster, optionally with labels.",
+      },
+      {
+        command: "kubectl label namespace <name> <key>=<value>",
+        description: "Add or change a label on a namespace.",
+      },
+      {
+        command: "kubectl get clusterpolicies [-o yaml]",
+        description: "List Kyverno ClusterPolicies, or read their rules.",
+      },
+      {
+        command: "kubectl get deployments [-A]",
+        description: "List Deployments and how many replicas are ready.",
+      },
+      {
+        command: "kubectl get events [-n <namespace>] [-A]",
+        description: "Show recent cluster events, such as failed Pod creation.",
       },
       {
         command: "kubectl get nodes [-o wide] [--show-labels]",
@@ -1176,7 +1213,10 @@ function kubectlUsage(): string {
     "  kubectl describe pods [-A] [-l app=<name>]",
     "  kubectl get nodes [-o wide] [--show-labels]",
     "  kubectl describe node worker-02",
-    "  kubectl get namespaces",
+    "  kubectl get namespaces [--show-labels]",
+    "  kubectl label namespace <name> <key>=<value> [--overwrite]",
+    "  kubectl get clusterpolicies [-o yaml]",
+    "  kubectl get deployments|events [-n <namespace>] [-A]",
     "  kubectl get runtimeclass",
     "  kubectl get serviceaccounts|secrets [-A] [-o yaml]",
     "  kubectl get clusterroles|clusterrolebindings [-o wide|yaml]",
@@ -1212,7 +1252,7 @@ function getPods(flags: KubectlFlags): string {
       pod.status === "Running" ? "1/1" : "0/1",
       pod.status,
       "0",
-      "3h12m",
+      pod.name === PAYMENTS.pod ? "12s" : "3h12m",
     ];
 
     if (flags.allNamespaces) row.unshift(pod.namespace);
@@ -1434,15 +1474,6 @@ function describeNode(name: string | undefined): string {
       .map((line) => `  ${line}`)
       .join("\n"),
   ].join("\n");
-}
-
-function getNamespaces(): string {
-  const names = [...new Set(["default", ...pods.map((pod) => pod.namespace)])];
-
-  return table(
-    ["NAME", "STATUS", "AGE"],
-    names.map((name) => [name, "Active", "41d"]),
-  );
 }
 
 function getRuntimeClass(): string {
@@ -1708,6 +1739,10 @@ function applyManifest(path: string): string {
 
   if (!pod) {
     return `error: unable to parse Pod manifest "${path}"`;
+  }
+
+  if (!isOnboarded(pod.namespace)) {
+    return `Error from server: error when creating "${path}": ${kyvernoDenial(pod.namespace, pod.name)}`;
   }
 
   const existingIndex = pods.findIndex(
@@ -2733,6 +2768,449 @@ function kubectlLogs(head: string[], target: string | undefined, flags: KubectlF
   return output.join("\n");
 }
 
+/* -------------------------------------------------------------------------- */
+/* Namespaces, Kyverno ClusterPolicy and the blocked tenant (K04)             */
+/*                                                                            */
+/* A Kyverno ClusterPolicy in Enforce mode denies Pods in any namespace that  */
+/* has not been onboarded with edera.dev/isolation=enforced. customer-e was    */
+/* created without the label, so its payments-worker Deployment sits at 0/1   */
+/* while Kyverno rejects every Pod its ReplicaSet tries to create. Labelling  */
+/* the namespace lets the next retry through, and the Pod starts in a zone.   */
+/* -------------------------------------------------------------------------- */
+
+function allNamespaceLabels(namespace: string): Record<string, string> {
+  return { "kubernetes.io/metadata.name": namespace, ...(namespaceLabels[namespace] ?? {}) };
+}
+
+function namespaceNames(): string[] {
+  return [...new Set([...Object.keys(namespaceLabels), ...pods.map((pod) => pod.namespace)])].sort();
+}
+
+/* Unknown namespaces are left alone so ad-hoc manifests keep working. */
+function isOnboarded(namespace: string): boolean {
+  const labels = namespaceLabels[namespace];
+  return !labels || labels[ONBOARDING_KEY] === ONBOARDING_VALUE;
+}
+
+function kyvernoDenial(namespace: string, podName = ""): string {
+  return [
+    `admission webhook "validate.kyverno.svc-fail" denied the request:`,
+    "",
+    `resource Pod/${namespace}/${podName} was blocked due to the following policies`,
+    "",
+    `${ONBOARDING_POLICY}:`,
+    `  ${ONBOARDING_RULE}: 'Pod admission denied: namespace ${namespace} is not onboarded to Edera isolation.'`,
+  ].join("\n");
+}
+
+const PAYMENTS = {
+  deployment: "payments-worker",
+  replicaSet: "payments-worker-6d8f7b9c4",
+  pod: "payments-worker-6d8f7b9c4-x2k9q",
+  zone: "zone-customer-e",
+  image: "ghcr.io/acme/payments-worker:1.0.3",
+};
+
+zoneTemplates.set(PAYMENTS.zone, {
+  name: PAYMENTS.zone,
+  id: "z-91d3f2",
+  state: "ready",
+  cpus: 2,
+  memory: "2048MB",
+  kernel: ZONE_KERNEL,
+  pod: PAYMENTS.pod,
+});
+
+podLogs[PAYMENTS.pod] = [
+  "2026-11-08T16:02:11.402Z INFO  payments-worker 1.0.3 starting",
+  "2026-11-08T16:02:11.407Z INFO  queue: payments.customer-e (prefetch=16)",
+  "2026-11-08T16:02:11.612Z INFO  ready, waiting for jobs",
+];
+
+function paymentsPod(): Pod | undefined {
+  return pods.find((pod) => pod.name === PAYMENTS.pod);
+}
+
+/* Admit the Pod the ReplicaSet keeps retrying, now that policy allows it. */
+function admitPaymentsWorker(): Pod {
+  const pod: Pod = {
+    name: PAYMENTS.pod,
+    namespace: BLOCKED_NAMESPACE,
+    app: PAYMENTS.deployment,
+    node: NODE.name,
+    status: "Running",
+    privileged: false,
+    runtimeClass: "edera",
+    annotations: {
+      "dev.edera/kernel": ZONE_KERNEL,
+      "dev.edera/initial-memory-request": "2048",
+    },
+    zone: PAYMENTS.zone,
+    image: PAYMENTS.image,
+  };
+  pods.push(pod);
+  syncZoneForPod(pod);
+  return pod;
+}
+
+/* ---- Namespaces ------------------------------------------------------------ */
+
+function namespaceLabelString(namespace: string): string {
+  return Object.entries(allNamespaceLabels(namespace))
+    .map(([key, value]) => `${key}=${value}`)
+    .join(",");
+}
+
+function getNamespaces(name: string | undefined, flags: KubectlFlags): string {
+  const names = namespaceNames();
+  const visible = name ? names.filter((namespace) => namespace === name) : names;
+
+  if (name && visible.length === 0) return notFound("namespaces", name);
+  if (name === BLOCKED_NAMESPACE || !name) state.blockedTenantSeen = true;
+
+  if (flags.yaml) {
+    return yamlDocument(
+      visible.map((namespace) => ({
+        apiVersion: "v1",
+        kind: "Namespace",
+        metadata: { labels: allNamespaceLabels(namespace), name: namespace },
+        spec: { finalizers: ["kubernetes"] },
+        status: { phase: "Active" },
+      })),
+      Boolean(name),
+    );
+  }
+
+  const headers = ["NAME", "STATUS", "AGE"];
+  const rows = visible.map((namespace) => [
+    namespace,
+    "Active",
+    namespace === BLOCKED_NAMESPACE ? "2d" : "41d",
+  ]);
+
+  if (flags.showLabels) {
+    headers.push("LABELS");
+    rows.forEach((row, index) => row.push(namespaceLabelString(visible[index])));
+  }
+
+  return table(headers, rows);
+}
+
+function describeNamespace(name: string | undefined): string {
+  const names = name ? [name] : namespaceNames();
+  if (name && !namespaceNames().includes(name)) return notFound("namespaces", name);
+  if (!name || name === BLOCKED_NAMESPACE) state.blockedTenantSeen = true;
+
+  return names
+    .map((namespace) =>
+      [
+        `Name:         ${namespace}`,
+        ...keyValueBlock("Labels", allNamespaceLabels(namespace), 14, "="),
+        "Annotations:  <none>",
+        "Status:       Active",
+        "",
+        "No resource quota.",
+        "",
+        "No LimitRange resource.",
+      ].join("\n"),
+    )
+    .join("\n\n\n");
+}
+
+function kubectlLabel(positional: string[], head: string[]): string {
+  const [, rawResource, rawName, ...rest] = positional;
+  const slashed = rawResource?.includes("/");
+  const resource = slashed ? rawResource.split("/")[0] : rawResource;
+  const name = slashed ? rawResource.split("/").slice(1).join("/") : rawName;
+  const changes = slashed ? [rawName, ...rest].filter(Boolean) : rest;
+
+  if (!resource) return "error: resource(s) were provided, but no name was specified";
+
+  if (!["ns", "namespace", "namespaces"].includes(resource)) {
+    return `error: this lab only supports labelling namespaces (got "${resource}")`;
+  }
+
+  if (!name) return "error: resource(s) were provided, but no name was specified";
+  if (!namespaceNames().includes(name)) return notFound("namespaces", name);
+  if (changes.length === 0) return "error: at least one label update is required";
+
+  const overwrite = head.includes("--overwrite");
+  const labels = { ...(namespaceLabels[name] ?? {}) };
+  let changed = false;
+
+  for (const change of changes) {
+    if (change.endsWith("-") && !change.includes("=")) {
+      const key = change.slice(0, -1);
+      if (key in labels) {
+        delete labels[key];
+        changed = true;
+      }
+      continue;
+    }
+
+    const separator = change.indexOf("=");
+    if (separator <= 0) return `error: invalid label spec: ${change}`;
+
+    const key = change.slice(0, separator);
+    const value = change.slice(separator + 1);
+
+    if (key in labels && labels[key] !== value && !overwrite) {
+      return `error: '${key}' already has a value (${labels[key]}), and --overwrite is false`;
+    }
+    if (labels[key] !== value) {
+      labels[key] = value;
+      changed = true;
+    }
+  }
+
+  if (!changed) return `namespace/${name} not labeled`;
+
+  namespaceLabels[name] = labels;
+  const output = [`namespace/${name} labeled`];
+
+  if (name === BLOCKED_NAMESPACE && isOnboarded(name) && !paymentsPod()) {
+    state.blockedTenantSeen = true;
+    const pod = admitPaymentsWorker();
+    output.push(
+      "",
+      `Kyverno: ClusterPolicy ${ONBOARDING_POLICY} now admits Pods in ${name}.`,
+      `replicaset/${PAYMENTS.replicaSet} retried and created pod/${pod.name}: Running in ${pod.zone}.`,
+    );
+
+    if (currentStage()?.flag === K04_FLAG) {
+      output.push("", captureCurrentStage());
+    }
+  }
+
+  return output.join("\n");
+}
+
+/* ---- Kyverno ClusterPolicy ------------------------------------------------- */
+
+const ONBOARDING_POLICY_YAML = [
+  "apiVersion: kyverno.io/v1",
+  "kind: ClusterPolicy",
+  "metadata:",
+  "  annotations:",
+  "    policies.kyverno.io/category: Multi-Tenancy",
+  "    policies.kyverno.io/severity: high",
+  "    policies.kyverno.io/title: Edera tenant onboarding",
+  `  name: ${ONBOARDING_POLICY}`,
+  "spec:",
+  "  admission: true",
+  "  background: true",
+  "  rules:",
+  `  - name: ${ONBOARDING_RULE}`,
+  "    match:",
+  "      any:",
+  "      - resources:",
+  "          kinds:",
+  "          - Pod",
+  "    exclude:",
+  "      any:",
+  "      - resources:",
+  "          namespaces:",
+  "          - kube-system",
+  "          - kyverno",
+  "      - resources:",
+  "          namespaceSelector:",
+  "            matchLabels:",
+  `              ${ONBOARDING_KEY}: ${ONBOARDING_VALUE}`,
+  "    validate:",
+  "      failureAction: Enforce",
+  "      message: 'Pod admission denied: namespace {{request.namespace}} is not onboarded",
+  "        to Edera isolation.'",
+  "      deny: {}",
+  "status:",
+  "  conditions:",
+  "  - reason: Succeeded",
+  "    status: \"True\"",
+  "    type: Ready",
+].join("\n");
+
+function getClusterPolicies(name: string | undefined, flags: KubectlFlags): string {
+  if (name && name !== ONBOARDING_POLICY) return notFound("clusterpolicies.kyverno.io", name);
+  state.blockedTenantSeen = true;
+
+  if (flags.yaml) {
+    if (name) return ONBOARDING_POLICY_YAML;
+    return [
+      "apiVersion: v1",
+      "items:",
+      ...ONBOARDING_POLICY_YAML.split("\n").map((line, index) => (index === 0 ? `- ${line}` : `  ${line}`)),
+      "kind: List",
+      "metadata:",
+      '  resourceVersion: ""',
+    ].join("\n");
+  }
+
+  return table(
+    ["NAME", "ADMISSION", "BACKGROUND", "READY", "AGE", "MESSAGE"],
+    [[ONBOARDING_POLICY, "true", "true", "True", "9d", "Ready"]],
+  );
+}
+
+function describeClusterPolicy(name: string | undefined): string {
+  if (name && name !== ONBOARDING_POLICY) return notFound("clusterpolicies.kyverno.io", name);
+  state.blockedTenantSeen = true;
+
+  return [
+    `Name:         ${ONBOARDING_POLICY}`,
+    "Namespace:",
+    "Labels:       <none>",
+    "Annotations:  policies.kyverno.io/category: Multi-Tenancy",
+    "              policies.kyverno.io/severity: high",
+    "              policies.kyverno.io/title: Edera tenant onboarding",
+    "API Version:  kyverno.io/v1",
+    "Kind:         ClusterPolicy",
+    "Spec:",
+    "  Admission:   true",
+    "  Background:  true",
+    "  Rules:",
+    "    Exclude:",
+    "      Any:",
+    "        Resources:",
+    "          Namespaces:",
+    "            kube-system",
+    "            kyverno",
+    "        Resources:",
+    "          Namespace Selector:",
+    "            Match Labels:",
+    `              ${ONBOARDING_KEY}:  ${ONBOARDING_VALUE}`,
+    "    Match:",
+    "      Any:",
+    "        Resources:",
+    "          Kinds:",
+    "            Pod",
+    `    Name:  ${ONBOARDING_RULE}`,
+    "    Validate:",
+    "      Deny:",
+    "      Failure Action:  Enforce",
+    "      Message:         Pod admission denied: namespace {{request.namespace}} is not onboarded to Edera isolation.",
+    "Status:",
+    "  Conditions:",
+    "    Reason:  Succeeded",
+    "    Status:  True",
+    "    Type:    Ready",
+    "Events:      <none>",
+  ].join("\n");
+}
+
+/* ---- Deployments and events -------------------------------------------- */
+
+function paymentsReady(): boolean {
+  return Boolean(paymentsPod());
+}
+
+function getDeployments(name: string | undefined, flags: KubectlFlags): string {
+  const inScopeNs = flags.allNamespaces || flags.namespace === BLOCKED_NAMESPACE;
+  if (name && (name !== PAYMENTS.deployment || !inScopeNs)) {
+    return notFound("deployments.apps", name);
+  }
+  if (!inScopeNs) return noneFound(flags, true);
+
+  state.blockedTenantSeen = true;
+  const ready = paymentsReady() ? "1" : "0";
+
+  if (flags.yaml) {
+    return toYaml({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: { name: PAYMENTS.deployment, namespace: BLOCKED_NAMESPACE },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: PAYMENTS.deployment } },
+        template: {
+          metadata: { labels: { app: PAYMENTS.deployment } },
+          spec: {
+            containers: [{ image: PAYMENTS.image, name: PAYMENTS.deployment }],
+            runtimeClassName: "edera",
+          },
+        },
+      },
+      status: { availableReplicas: Number(ready), readyReplicas: Number(ready), replicas: Number(ready) },
+    }).join("\n");
+  }
+
+  const headers = ["NAME", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"];
+  const row = [PAYMENTS.deployment, `${ready}/1`, ready, ready, "2d"];
+  return flags.allNamespaces
+    ? table(["NAMESPACE", ...headers], [[BLOCKED_NAMESPACE, ...row]])
+    : table(headers, [row]);
+}
+
+function describeDeployment(name: string | undefined, flags: KubectlFlags): string {
+  const inScopeNs = flags.allNamespaces || flags.namespace === BLOCKED_NAMESPACE;
+  if (!inScopeNs || (name && name !== PAYMENTS.deployment)) {
+    return name ? notFound("deployments.apps", name) : noneFound(flags, true);
+  }
+
+  state.blockedTenantSeen = true;
+  const ready = paymentsReady();
+
+  return [
+    `Name:                   ${PAYMENTS.deployment}`,
+    `Namespace:              ${BLOCKED_NAMESPACE}`,
+    `Selector:               app=${PAYMENTS.deployment}`,
+    `Replicas:               1 desired | ${ready ? 1 : 0} updated | ${ready ? 1 : 0} total | ${ready ? 1 : 0} available | ${ready ? 0 : 1} unavailable`,
+    "StrategyType:           RollingUpdate",
+    "Pod Template:",
+    `  Labels:  app=${PAYMENTS.deployment}`,
+    "  Containers:",
+    `   ${PAYMENTS.deployment}:`,
+    `    Image:  ${PAYMENTS.image}`,
+    "  Runtime Class Name:  edera",
+    "Conditions:",
+    "  Type             Status  Reason",
+    "  ----             ------  ------",
+    ...(ready
+      ? ["  Available        True    MinimumReplicasAvailable", "  Progressing      True    NewReplicaSetAvailable"]
+      : [
+          "  Available        False   MinimumReplicasUnavailable",
+          "  ReplicaFailure   True    FailedCreate",
+          "  Progressing      False   ProgressDeadlineExceeded",
+        ]),
+    `NewReplicaSet:      ${PAYMENTS.replicaSet} (${ready ? 1 : 0}/1 replicas created)`,
+    "Events:",
+    "  Type    Reason             Age   From                   Message",
+    "  ----    ------             ----  ----                   -------",
+    `  Normal  ScalingReplicaSet  2d    deployment-controller  Scaled up replica set ${PAYMENTS.replicaSet} to 1`,
+  ].join("\n");
+}
+
+function getEvents(flags: KubectlFlags): string {
+  const showTenant = flags.allNamespaces || flags.namespace === BLOCKED_NAMESPACE;
+  const showPolicy = flags.allNamespaces || flags.namespace === "default";
+  if (!showTenant && !showPolicy) return noneFound(flags, true);
+
+  state.blockedTenantSeen = true;
+  const denial = `Error creating: ${kyvernoDenial(BLOCKED_NAMESPACE).replace(/\s*\n+\s*/g, " ")}`;
+  const rows: string[][] = [];
+
+  if (showPolicy) {
+    rows.push([
+      "default", "64s", "Warning", "PolicyViolation", `clusterpolicy/${ONBOARDING_POLICY}`,
+      `Pod ${BLOCKED_NAMESPACE}/: [${ONBOARDING_RULE}] fail (blocked); Pod admission denied: namespace ${BLOCKED_NAMESPACE} is not onboarded to Edera isolation.`,
+    ]);
+  }
+
+  if (showTenant) {
+    rows.push([BLOCKED_NAMESPACE, "64s", "Warning", "FailedCreate", `replicaset/${PAYMENTS.replicaSet}`, denial]);
+    if (paymentsReady()) {
+      rows.push(
+        [BLOCKED_NAMESPACE, "8s", "Normal", "SuccessfulCreate", `replicaset/${PAYMENTS.replicaSet}`, `Created pod: ${PAYMENTS.pod}`],
+        [BLOCKED_NAMESPACE, "8s", "Normal", "Scheduled", `pod/${PAYMENTS.pod}`, `Successfully assigned ${BLOCKED_NAMESPACE}/${PAYMENTS.pod} to ${NODE.name}`],
+        [BLOCKED_NAMESPACE, "6s", "Normal", "Started", `pod/${PAYMENTS.pod}`, `Started container ${PAYMENTS.deployment} in ${PAYMENTS.zone}`],
+      );
+    }
+  }
+
+  const headers = ["LAST SEEN", "TYPE", "REASON", "OBJECT", "MESSAGE"];
+  return flags.allNamespaces
+    ? table(["NAMESPACE", ...headers], rows)
+    : table(headers, rows.map((row) => row.slice(1)));
+}
+
 function kubectl(raw: string): string {
   const tokens = raw.split(/\s+/).slice(1);
   const manifestAction = parseManifestAction(tokens);
@@ -2760,6 +3238,7 @@ function kubectl(raw: string): string {
 
   if (verb === "auth") return kubectlAuth(head, flags);
   if (verb === "logs" || verb === "log") return kubectlLogs(head, rawResource, flags);
+  if (verb === "label") return kubectlLabel(positional, head);
 
   /* Accept kubectl's `<resource>/<name>` form, e.g. clusterrolebinding/foo. */
   const slashed = verb !== "exec" && rawResource?.includes("/");
@@ -2790,7 +3269,18 @@ function kubectl(raw: string): string {
   }
 
   if (verb === "get" && isNode) return getNodes(flags);
-  if (verb === "get" && isNamespace) return getNamespaces();
+  if (verb === "get" && isNamespace) return getNamespaces(name, flags);
+  if (verb === "describe" && isNamespace) return describeNamespace(name);
+
+  const isClusterPolicy = ["clusterpolicy", "clusterpolicies", "cpol"].includes(resource ?? "");
+  const isDeployment = ["deployment", "deployments", "deploy"].includes(resource ?? "");
+  const isEvent = ["event", "events", "ev"].includes(resource ?? "");
+
+  if (verb === "get" && isClusterPolicy) return getClusterPolicies(name, flags);
+  if (verb === "describe" && isClusterPolicy) return describeClusterPolicy(name);
+  if (verb === "get" && isDeployment) return getDeployments(name, flags);
+  if (verb === "describe" && isDeployment) return describeDeployment(name, flags);
+  if (verb === "get" && isEvent) return getEvents(flags);
   if (verb === "get" && isRuntimeClass) return getRuntimeClass();
 
   if (verb === "delete" && isPod) return deletePod(name, flags);
@@ -3242,10 +3732,20 @@ function submit(value: string): string {
     ].join("\n");
   }
 
+  return captureCurrentStage();
+}
+
+/* Records the current stage's flag and returns the capture message. */
+function captureCurrentStage(): string {
+  const stage = currentStage()!;
   state.captured.push(stage.flag);
   state.stage++;
 
   const next = currentStage();
+
+  /* K04 is captured by labelling; if that already happened, say so. */
+  const k04Ready =
+    next?.flag === K04_FLAG && isOnboarded(BLOCKED_NAMESPACE) && Boolean(paymentsPod());
 
   return [
     "FLAG CAPTURED",
@@ -3255,7 +3755,11 @@ function submit(value: string): string {
     ...stage.reward,
     "",
     next
-      ? `Objective ${String(state.stage + 1).padStart(2, "0")}: ${next.objective}`
+      ? `Objective ${String(state.stage + 1).padStart(2, "0")}: ${next.objective}${
+          k04Ready
+            ? "\n  You've already admitted that workload. Submit the label you applied to capture this flag."
+            : ""
+        }`
       : [
           "CTF COMPLETE",
           "-----------",
@@ -3506,6 +4010,12 @@ function renderArchitecture(): string {
     .map((namespace) => `<div class="tenant-card layer-unknown"><span class="tenant-dot"></span><strong>${namespace}</strong><span class="tenant-caption">no running workloads</span>${chipsOnce(namespace)}</div>`)
     .join("");
 
+  /* K04: the blocked tenant appears once the player has come across it. */
+  const blockedCard =
+    state.blockedTenantSeen && !paymentsPod()
+      ? `<div class="tenant-card tenant-blocked"><span class="tenant-dot"></span><strong>${BLOCKED_NAMESPACE}/${PAYMENTS.deployment}</strong><span class="tenant-caption">0/1 · denied by ${ONBOARDING_POLICY}</span></div>`
+      : "";
+
   const exposedNamespaces = new Set(secrets.map((secret) => secret.namespace)).size;
 
   const apiBox = rbacFound && adminBinding && adminSubject
@@ -3531,8 +4041,8 @@ function renderArchitecture(): string {
 
       ${apiBox}
 
-      ${pods.length > 0 || orphanCards
-        ? `<div class="tenant-grid">${cards}${orphanCards}</div>`
+      ${pods.length > 0 || orphanCards || blockedCard
+        ? `<div class="tenant-grid">${cards}${orphanCards}${blockedCard}</div>`
         : `<div class="architecture-empty"><strong>NO WORKLOADS SCHEDULED</strong><span>Apply a manifest from <code>~/manifests</code> to restore a workload.</span></div>`}
 
       <div class="kernel-connector"></div>
@@ -3628,16 +4138,21 @@ function renderFlags(): string {
 }
 
 function renderTerminalOutput(value: string): string {
-  const lines = value.split("\n");
+  const allLines = value.split("\n");
+  const start = allLines.indexOf("FLAG CAPTURED");
 
-  if (lines[0] !== "FLAG CAPTURED" || lines.length < 3) {
+  if (start === -1 || allLines.length - start < 3) {
     return `<pre class="terminal-output-block">${terminalKubectlText(value)}</pre>`;
   }
 
+  /* Output that led to the capture (e.g. kubectl label) is shown first. */
+  const before = allLines.slice(0, start).join("\n").trim();
+  const lines = allLines.slice(start);
   const flag = lines[2].trim();
   const rest = lines.slice(3).join("\n").trim();
 
   return `
+    ${before ? `<pre class="terminal-output-block">${terminalKubectlText(before)}</pre>` : ""}
     <div class="terminal-flag-capture" role="status" aria-live="polite">
       <div class="terminal-flag-banner">
         <span>FLAG CAPTURED</span>
