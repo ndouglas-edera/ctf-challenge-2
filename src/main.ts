@@ -345,8 +345,8 @@ const stages: Stage[] = [
   {
     title: "K02 · Overly permissive authorization",
     objective: "Find the service account bound to excessive permissions.",
-    brief: ["Inspect ~/manifests/rbac-audit.yaml and ~/evidence/rbac-review.txt.", "Submit the affected service account."],
-    answers: ["report-bot"],
+    brief: ["Read up on RBAC good practices: https://kubernetes.io/docs/concepts/security/rbac-good-practices/", "Submit the affected service account."],
+    answers: ["report-bot", "customer-b/report-bot", "system:serviceaccount:customer-b:report-bot"],
     flag: "EDERA{K02_EXCESSIVE_PERMISSIONS}",
     reward: ["RBAC should follow least privilege.", "Avoid wildcard and unnecessary cluster-wide permissions."],
   },
@@ -598,6 +598,30 @@ const helpSections: HelpSection[] = [
         description: "List the RuntimeClass objects configured in the cluster.",
       },
       {
+        command: "kubectl get serviceaccounts [-A]",
+        description: "List service accounts, the identities workloads run as.",
+      },
+      {
+        command: "kubectl get secrets [-A] [-o yaml]",
+        description: "List Secrets, or dump their (base64-encoded) contents.",
+      },
+      {
+        command: "kubectl get clusterrolebindings [-o wide]",
+        description: "List cluster-wide role grants and who they apply to.",
+      },
+      {
+        command: "kubectl get rolebindings [-A] [-o wide]",
+        description: "List namespace-scoped role grants.",
+      },
+      {
+        command: "kubectl describe clusterrole|role <name>",
+        description: "Show the permissions a role grants.",
+      },
+      {
+        command: "kubectl auth can-i --list --as=<user>",
+        description: "List what a user or service account is allowed to do.",
+      },
+      {
         command: "kubectl apply -f <file|directory>",
         description: "Create or update pods from manifests on the node.",
       },
@@ -664,6 +688,7 @@ const helpSections: HelpSection[] = [
       { command: "ls [-la]", description: "List files and directories." },
       { command: "cat <file>", description: "Read a file from the node filesystem." },
       { command: "tree", description: "Display the node filesystem tree." },
+      { command: "echo <value> | base64 -d", description: "Decode a base64 value, such as Secret data." },
       { command: "whoami", description: "Print the current user." },
       { command: "hostname", description: "Print the node hostname." },
       { command: "uname -a", description: "Display kernel and system information." },
@@ -1143,6 +1168,12 @@ function kubectlUsage(): string {
     "  kubectl describe node worker-02",
     "  kubectl get namespaces",
     "  kubectl get runtimeclass",
+    "  kubectl get serviceaccounts|secrets [-A] [-o yaml]",
+    "  kubectl get clusterroles|clusterrolebindings [-o wide|yaml]",
+    "  kubectl get roles|rolebindings [-A] [-o wide|yaml]",
+    "  kubectl describe <resource> [name] [-n <namespace>]",
+    "  kubectl auth can-i <verb> <resource> [--as=<user>]",
+    "  kubectl auth can-i --list [--as=<user>]",
     "  kubectl apply -f <file|directory>",
     "  kubectl delete pod <name> -n <namespace>",
     "  kubectl delete -f <file|directory>",
@@ -1761,6 +1792,837 @@ function kubectlManifestAction(action: ManifestAction): string {
   return results.join("\n");
 }
 
+/* -------------------------------------------------------------------------- */
+/* RBAC, service accounts and secrets (K02)                                   */
+/*                                                                            */
+/* Read-only views of the cluster's identity and authorization objects. One   */
+/* service account is bound to cluster-admin; finding it means connecting a   */
+/* long-lived token Secret, the ServiceAccount it belongs to, and the binding */
+/* that grants it everything. The rest are realistic red herrings.           */
+/* -------------------------------------------------------------------------- */
+
+interface PolicyRule {
+  apiGroups?: string[];
+  resources?: string[];
+  resourceNames?: string[];
+  nonResourceURLs?: string[];
+  verbs: string[];
+}
+
+interface RoleObject {
+  name: string;
+  namespace?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+  rules: PolicyRule[];
+}
+
+interface Subject {
+  kind: "ServiceAccount" | "User" | "Group";
+  name: string;
+  namespace?: string;
+}
+
+interface BindingObject {
+  name: string;
+  namespace?: string;
+  roleRef: { kind: "ClusterRole" | "Role"; name: string };
+  subjects: Subject[];
+  age: string;
+}
+
+interface ServiceAccountObject {
+  name: string;
+  namespace: string;
+  age: string;
+  tokens?: string[];
+  annotations?: Record<string, string>;
+}
+
+interface SecretObject {
+  name: string;
+  namespace: string;
+  type: string;
+  age: string;
+  annotations?: Record<string, string>;
+  /* Plaintext values; base64-encoded on output, as the API server does. */
+  data: Record<string, string>;
+}
+
+const RBAC_DEFAULTS = { "kubernetes.io/bootstrapping": "rbac-defaults" };
+
+const clusterRoles: RoleObject[] = [
+  {
+    name: "cluster-admin",
+    labels: RBAC_DEFAULTS,
+    annotations: { "rbac.authorization.kubernetes.io/autoupdate": "true" },
+    rules: [
+      { apiGroups: ["*"], resources: ["*"], verbs: ["*"] },
+      { nonResourceURLs: ["*"], verbs: ["*"] },
+    ],
+  },
+  {
+    name: "admin",
+    labels: RBAC_DEFAULTS,
+    rules: [
+      { apiGroups: [""], resources: ["pods", "services", "configmaps", "secrets", "serviceaccounts"], verbs: ["create", "delete", "get", "list", "patch", "update", "watch"] },
+      { apiGroups: ["apps"], resources: ["deployments", "statefulsets", "daemonsets"], verbs: ["create", "delete", "get", "list", "patch", "update", "watch"] },
+      { apiGroups: ["rbac.authorization.k8s.io"], resources: ["roles", "rolebindings"], verbs: ["create", "delete", "get", "list", "patch", "update", "watch"] },
+    ],
+  },
+  {
+    name: "edit",
+    labels: RBAC_DEFAULTS,
+    rules: [
+      { apiGroups: [""], resources: ["pods", "services", "configmaps", "secrets"], verbs: ["create", "delete", "get", "list", "patch", "update", "watch"] },
+      { apiGroups: ["apps"], resources: ["deployments", "statefulsets"], verbs: ["create", "delete", "get", "list", "patch", "update", "watch"] },
+    ],
+  },
+  {
+    name: "view",
+    labels: RBAC_DEFAULTS,
+    rules: [
+      { apiGroups: [""], resources: ["pods", "services", "configmaps", "namespaces"], verbs: ["get", "list", "watch"] },
+      { apiGroups: ["apps"], resources: ["deployments", "statefulsets", "daemonsets"], verbs: ["get", "list", "watch"] },
+    ],
+  },
+  {
+    name: "system:basic-user",
+    labels: RBAC_DEFAULTS,
+    rules: [
+      { apiGroups: ["authorization.k8s.io"], resources: ["selfsubjectaccessreviews", "selfsubjectrulesreviews"], verbs: ["create"] },
+    ],
+  },
+  {
+    name: "edera-node-agent",
+    rules: [
+      { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
+      { apiGroups: [""], resources: ["nodes"], verbs: ["get"] },
+      { apiGroups: ["node.k8s.io"], resources: ["runtimeclasses"], verbs: ["get", "list"] },
+    ],
+  },
+];
+
+const namespacedRoles: RoleObject[] = [
+  {
+    name: "billing-secret-reader",
+    namespace: "customer-b",
+    rules: [
+      { apiGroups: [""], resources: ["secrets"], resourceNames: ["billing-api-token"], verbs: ["get"] },
+    ],
+  },
+  {
+    name: "image-cache-writer",
+    namespace: "customer-a",
+    rules: [
+      { apiGroups: [""], resources: ["configmaps"], verbs: ["get", "update"] },
+    ],
+  },
+];
+
+const clusterRoleBindings: BindingObject[] = [
+  {
+    name: "cluster-admin",
+    roleRef: { kind: "ClusterRole", name: "cluster-admin" },
+    subjects: [{ kind: "Group", name: "system:masters" }],
+    age: "41d",
+  },
+  {
+    name: "system:basic-user",
+    roleRef: { kind: "ClusterRole", name: "system:basic-user" },
+    subjects: [{ kind: "Group", name: "system:authenticated" }],
+    age: "41d",
+  },
+  {
+    name: "edera-node-agent",
+    roleRef: { kind: "ClusterRole", name: "edera-node-agent" },
+    subjects: [{ kind: "ServiceAccount", name: "edera-node-agent", namespace: "platform" }],
+    age: "41d",
+  },
+  {
+    name: "platform-oncall-view",
+    roleRef: { kind: "ClusterRole", name: "view" },
+    subjects: [
+      { kind: "Group", name: "platform-oncall" },
+      { kind: "User", name: "nigel" },
+    ],
+    age: "33d",
+  },
+  {
+    name: "report-bot-admin",
+    roleRef: { kind: "ClusterRole", name: "cluster-admin" },
+    subjects: [{ kind: "ServiceAccount", name: "report-bot", namespace: "customer-b" }],
+    age: "12d",
+  },
+];
+
+const roleBindings: BindingObject[] = [
+  {
+    name: "billing-api-secret-reader",
+    namespace: "customer-b",
+    roleRef: { kind: "Role", name: "billing-secret-reader" },
+    subjects: [{ kind: "ServiceAccount", name: "billing-api", namespace: "customer-b" }],
+    age: "38d",
+  },
+  {
+    name: "image-processor-cache",
+    namespace: "customer-a",
+    roleRef: { kind: "Role", name: "image-cache-writer" },
+    subjects: [{ kind: "ServiceAccount", name: "image-processor", namespace: "customer-a" }],
+    age: "40d",
+  },
+  {
+    name: "analytics-batch-edit",
+    namespace: "customer-d",
+    roleRef: { kind: "ClusterRole", name: "edit" },
+    subjects: [{ kind: "ServiceAccount", name: "analytics-batch", namespace: "customer-d" }],
+    age: "27d",
+  },
+  {
+    name: "recommendation-view",
+    namespace: "customer-c",
+    roleRef: { kind: "ClusterRole", name: "view" },
+    subjects: [{ kind: "ServiceAccount", name: "recommendation", namespace: "customer-c" }],
+    age: "35d",
+  },
+];
+
+const serviceAccounts: ServiceAccountObject[] = [
+  ...["default", "customer-a", "customer-b", "customer-c", "customer-d", "platform"].map(
+    (namespace) => ({ name: "default", namespace, age: "41d" }),
+  ),
+  { name: "image-processor", namespace: "customer-a", age: "40d" },
+  { name: "billing-api", namespace: "customer-b", age: "38d" },
+  {
+    name: "report-bot",
+    namespace: "customer-b",
+    age: "12d",
+    tokens: ["report-bot-token"],
+    annotations: { "owner": "reporting-integration" },
+  },
+  { name: "recommendation", namespace: "customer-c", age: "35d" },
+  { name: "analytics-batch", namespace: "customer-d", age: "27d" },
+  { name: "edera-node-agent", namespace: "platform", age: "41d" },
+];
+
+function fakeJwt(payload: Record<string, string>): string {
+  const segment = (value: object) =>
+    btoa(JSON.stringify(value)).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+  return `${segment({ alg: "RS256", kid: "ctf-lab" })}.${segment(payload)}.bGFiLW9ubHktbm90LWEtcmVhbC1zaWduYXR1cmU`;
+}
+
+const LAB_CA = "-----BEGIN CERTIFICATE-----\nlab-only-not-a-real-ca\n-----END CERTIFICATE-----\n";
+
+const secrets: SecretObject[] = [
+  {
+    name: "image-processor-registry",
+    namespace: "customer-a",
+    type: "kubernetes.io/dockerconfigjson",
+    age: "40d",
+    data: { ".dockerconfigjson": '{"auths":{"registry.customer-a.internal":{"auth":"lab-only"}}}' },
+  },
+  {
+    name: "billing-api-token",
+    namespace: "customer-b",
+    type: "Opaque",
+    age: "38d",
+    data: { token: "lab-only-billing-token-0000" },
+  },
+  {
+    name: "report-bot-token",
+    namespace: "customer-b",
+    type: "kubernetes.io/service-account-token",
+    age: "12d",
+    annotations: {
+      "kubernetes.io/service-account.name": "report-bot",
+      "kubernetes.io/service-account.uid": "6f1c2a9e-0b7d-4e55-9a51-2c8e7d3b1f40",
+    },
+    data: {
+      "ca.crt": LAB_CA,
+      namespace: "customer-b",
+      token: fakeJwt({
+        iss: "kubernetes/serviceaccount",
+        "kubernetes.io/serviceaccount/namespace": "customer-b",
+        "kubernetes.io/serviceaccount/secret.name": "report-bot-token",
+        "kubernetes.io/serviceaccount/service-account.name": "report-bot",
+        sub: "system:serviceaccount:customer-b:report-bot",
+      }),
+    },
+  },
+  {
+    name: "recommendation-model-key",
+    namespace: "customer-c",
+    type: "Opaque",
+    age: "35d",
+    data: { "model-api-key": "lab-only-model-key-0000" },
+  },
+  {
+    name: "analytics-db-credentials",
+    namespace: "customer-d",
+    type: "Opaque",
+    age: "27d",
+    data: { username: "analytics", password: "lab-only-password-0000" },
+  },
+  {
+    name: "edera-node-agent-tls",
+    namespace: "platform",
+    type: "kubernetes.io/tls",
+    age: "41d",
+    data: { "tls.crt": LAB_CA, "tls.key": "-----BEGIN PRIVATE KEY-----\nlab-only\n-----END PRIVATE KEY-----\n" },
+  },
+];
+
+/* A small YAML emitter, enough for kubectl -o yaml output. */
+function yamlOutScalar(value: unknown): string {
+  if (typeof value === "boolean" || typeof value === "number") return String(value);
+  const text = String(value);
+  if (text === "") return '""';
+  if (
+    /^[\s*&!|>'"%@`#,[\]{}?-]|[:#]\s|:$|\s$/.test(text) ||
+    /^(true|false|null|yes|no|~|\d[\d.]*)$/i.test(text)
+  ) {
+    return `'${text.replace(/'/g, "''")}'`;
+  }
+  return text;
+}
+
+function toYaml(value: unknown, indent = ""): string[] {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [`${indent}[]`];
+    return value.flatMap((item) => {
+      if (item !== null && typeof item === "object") {
+        const inner = toYaml(item, `${indent}  `);
+        inner[0] = `${indent}- ${inner[0].slice(indent.length + 2)}`;
+        return inner;
+      }
+      return [`${indent}- ${yamlOutScalar(item)}`];
+    });
+  }
+
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .flatMap(([key, entry]) => {
+        if (Array.isArray(entry)) {
+          return entry.length === 0
+            ? [`${indent}${key}: []`]
+            : [`${indent}${key}:`, ...toYaml(entry, indent)];
+        }
+        if (entry !== null && typeof entry === "object") {
+          return Object.keys(entry).length === 0
+            ? [`${indent}${key}: {}`]
+            : [`${indent}${key}:`, ...toYaml(entry, `${indent}  `)];
+        }
+        return [`${indent}${key}: ${yamlOutScalar(entry)}`];
+      });
+  }
+
+  return [`${indent}${yamlOutScalar(value)}`];
+}
+
+function yamlDocument(items: object[], single: boolean): string {
+  if (single) return toYaml(items[0]).join("\n");
+  return toYaml({
+    apiVersion: "v1",
+    items,
+    kind: "List",
+    metadata: { resourceVersion: "" },
+  }).join("\n");
+}
+
+function secretManifest(secret: SecretObject): object {
+  return {
+    apiVersion: "v1",
+    data: Object.fromEntries(
+      Object.entries(secret.data).map(([key, value]) => [key, btoa(value)]),
+    ),
+    kind: "Secret",
+    metadata: {
+      annotations: secret.annotations,
+      name: secret.name,
+      namespace: secret.namespace,
+    },
+    type: secret.type,
+  };
+}
+
+function serviceAccountManifest(account: ServiceAccountObject): object {
+  return {
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: {
+      annotations: account.annotations,
+      name: account.name,
+      namespace: account.namespace,
+    },
+  };
+}
+
+function bindingManifest(binding: BindingObject): object {
+  return {
+    apiVersion: "rbac.authorization.k8s.io/v1",
+    kind: binding.namespace ? "RoleBinding" : "ClusterRoleBinding",
+    metadata: { name: binding.name, namespace: binding.namespace },
+    roleRef: {
+      apiGroup: "rbac.authorization.k8s.io",
+      kind: binding.roleRef.kind,
+      name: binding.roleRef.name,
+    },
+    subjects: binding.subjects.map((subject) => ({
+      ...(subject.kind === "ServiceAccount" ? {} : { apiGroup: "rbac.authorization.k8s.io" }),
+      kind: subject.kind,
+      name: subject.name,
+      namespace: subject.namespace,
+    })),
+  };
+}
+
+function roleManifest(role: RoleObject): object {
+  return {
+    apiVersion: "rbac.authorization.k8s.io/v1",
+    kind: role.namespace ? "Role" : "ClusterRole",
+    metadata: {
+      annotations: role.annotations,
+      labels: role.labels,
+      name: role.name,
+      namespace: role.namespace,
+    },
+    rules: role.rules,
+  };
+}
+
+function inScope<T extends { namespace?: string }>(items: T[], flags: KubectlFlags): T[] {
+  const scoped = items.filter((item) => flags.allNamespaces || item.namespace === flags.namespace);
+  /* kubectl sorts -A output by namespace, then name. */
+  return flags.allNamespaces
+    ? [...scoped].sort((a, b) => (a.namespace ?? "").localeCompare(b.namespace ?? ""))
+    : scoped;
+}
+
+function noneFound(flags: KubectlFlags, namespaced: boolean): string {
+  return !namespaced || flags.allNamespaces
+    ? "No resources found"
+    : `No resources found in ${flags.namespace} namespace.`;
+}
+
+function withNamespaceColumn(headers: string[], rows: string[][], items: { namespace?: string }[], flags: KubectlFlags): string {
+  if (!flags.allNamespaces) return table(headers, rows);
+  return table(
+    ["NAMESPACE", ...headers],
+    rows.map((row, index) => [items[index].namespace ?? "", ...row]),
+  );
+}
+
+function keyValueBlock(label: string, entries: Record<string, string> | undefined, width: number, separator: string): string[] {
+  const pad = (text: string) => text.padEnd(width);
+  const pairs = Object.entries(entries ?? {});
+  if (pairs.length === 0) return [`${pad(`${label}:`)}<none>`];
+  return pairs.map(([key, value], index) =>
+    `${index === 0 ? pad(`${label}:`) : " ".repeat(width)}${key}${separator}${value}`,
+  );
+}
+
+/* ---- Secrets ------------------------------------------------------------ */
+
+function getSecrets(name: string | undefined, flags: KubectlFlags): string {
+  const scoped = inScope(secrets, flags);
+  const visible = name ? scoped.filter((secret) => secret.name === name) : scoped;
+
+  if (name && visible.length === 0) return notFound("secrets", name);
+  if (visible.length === 0) return noneFound(flags, true);
+
+  if (flags.yaml) return yamlDocument(visible.map(secretManifest), Boolean(name));
+
+  return withNamespaceColumn(
+    ["NAME", "TYPE", "DATA", "AGE"],
+    visible.map((secret) => [secret.name, secret.type, String(Object.keys(secret.data).length), secret.age]),
+    visible,
+    flags,
+  );
+}
+
+function describeSecret(secret: SecretObject): string {
+  const keyWidth = Math.max(...Object.keys(secret.data).map((key) => key.length)) + 2;
+  return [
+    `Name:         ${secret.name}`,
+    `Namespace:    ${secret.namespace}`,
+    "Labels:       <none>",
+    ...keyValueBlock("Annotations", secret.annotations, 14, ": "),
+    "",
+    `Type:  ${secret.type}`,
+    "",
+    "Data",
+    "====",
+    ...Object.entries(secret.data).map(
+      ([key, value]) => `${`${key}:`.padEnd(keyWidth)}${value.length} bytes`,
+    ),
+  ].join("\n");
+}
+
+/* ---- Service accounts ----------------------------------------------------- */
+
+function getServiceAccounts(name: string | undefined, flags: KubectlFlags): string {
+  const scoped = inScope(serviceAccounts, flags);
+  const visible = name ? scoped.filter((account) => account.name === name) : scoped;
+
+  if (name && visible.length === 0) return notFound("serviceaccounts", name);
+  if (visible.length === 0) return noneFound(flags, true);
+
+  if (flags.yaml) return yamlDocument(visible.map(serviceAccountManifest), Boolean(name));
+
+  return withNamespaceColumn(
+    ["NAME", "SECRETS", "AGE"],
+    visible.map((account) => [account.name, "0", account.age]),
+    visible,
+    flags,
+  );
+}
+
+function describeServiceAccount(account: ServiceAccountObject): string {
+  return [
+    `Name:                ${account.name}`,
+    `Namespace:           ${account.namespace}`,
+    "Labels:              <none>",
+    ...keyValueBlock("Annotations", account.annotations, 21, ": "),
+    "Image pull secrets:  <none>",
+    "Mountable secrets:   <none>",
+    `Tokens:              ${account.tokens?.join(", ") ?? "<none>"}`,
+    "Events:              <none>",
+  ].join("\n");
+}
+
+/* ---- Bindings --------------------------------------------------------------- */
+
+function subjectColumn(binding: BindingObject, kind: Subject["kind"]): string {
+  return binding.subjects
+    .filter((subject) => subject.kind === kind)
+    .map((subject) => (kind === "ServiceAccount" ? `${subject.namespace}/${subject.name}` : subject.name))
+    .join(", ");
+}
+
+function getBindings(
+  source: BindingObject[],
+  plural: string,
+  namespaced: boolean,
+  name: string | undefined,
+  flags: KubectlFlags,
+): string {
+  const scoped = namespaced ? inScope(source, flags) : source;
+  const visible = name ? scoped.filter((binding) => binding.name === name) : scoped;
+
+  if (name && visible.length === 0) return notFound(plural, name);
+  if (visible.length === 0) return noneFound(flags, namespaced);
+
+  if (flags.yaml) return yamlDocument(visible.map(bindingManifest), Boolean(name));
+
+  const headers = ["NAME", "ROLE", "AGE"];
+  const rows = visible.map((binding) => [
+    binding.name,
+    `${binding.roleRef.kind}/${binding.roleRef.name}`,
+    binding.age,
+  ]);
+
+  if (flags.wide) {
+    headers.push("USERS", "GROUPS", "SERVICEACCOUNTS");
+    rows.forEach((row, index) => {
+      const binding = visible[index];
+      row.push(
+        subjectColumn(binding, "User"),
+        subjectColumn(binding, "Group"),
+        subjectColumn(binding, "ServiceAccount"),
+      );
+    });
+  }
+
+  return namespaced ? withNamespaceColumn(headers, rows, visible, flags) : table(headers, rows);
+}
+
+function describeBinding(binding: BindingObject): string {
+  return [
+    `Name:         ${binding.name}`,
+    ...(binding.namespace ? [`Namespace:    ${binding.namespace}`] : []),
+    "Labels:       <none>",
+    "Annotations:  <none>",
+    "Role:",
+    `  Kind:  ${binding.roleRef.kind}`,
+    `  Name:  ${binding.roleRef.name}`,
+    "Subjects:",
+    table(
+      ["  Kind", "Name", "Namespace"],
+      [
+        ["  ----", "----", "---------"],
+        ...binding.subjects.map((subject) => [`  ${subject.kind}`, subject.name, subject.namespace ?? ""]),
+      ],
+    ),
+  ].join("\n");
+}
+
+/* ---- Roles -------------------------------------------------------------- */
+
+function ruleResources(rule: PolicyRule): string {
+  if (!rule.resources) return "";
+  return rule.resources
+    .flatMap((resource) =>
+      (rule.apiGroups ?? [""]).map((group) => (group ? `${resource}.${group}` : resource)),
+    )
+    .join(", ");
+}
+
+function rulesTable(rules: PolicyRule[], indent = "  "): string {
+  return table(
+    [`${indent}Resources`, "Non-Resource URLs", "Resource Names", "Verbs"],
+    [
+      [`${indent}---------`, "-----------------", "--------------", "-----"],
+      ...rules.map((rule) => [
+        `${indent}${ruleResources(rule)}`,
+        `[${(rule.nonResourceURLs ?? []).join(" ")}]`,
+        `[${(rule.resourceNames ?? []).join(" ")}]`,
+        `[${rule.verbs.join(" ")}]`,
+      ]),
+    ],
+  );
+}
+
+function getRoles(
+  source: RoleObject[],
+  plural: string,
+  namespaced: boolean,
+  name: string | undefined,
+  flags: KubectlFlags,
+): string {
+  const scoped = namespaced ? inScope(source, flags) : source;
+  const visible = name ? scoped.filter((role) => role.name === name) : scoped;
+
+  if (name && visible.length === 0) return notFound(plural, name);
+  if (visible.length === 0) return noneFound(flags, namespaced);
+
+  if (flags.yaml) return yamlDocument(visible.map(roleManifest), Boolean(name));
+
+  const rows = visible.map((role) => [role.name, "2026-09-28T09:14:02Z"]);
+  return namespaced
+    ? withNamespaceColumn(["NAME", "CREATED AT"], rows, visible, flags)
+    : table(["NAME", "CREATED AT"], rows);
+}
+
+function describeRole(role: RoleObject): string {
+  return [
+    `Name:         ${role.name}`,
+    ...(role.namespace ? [`Namespace:    ${role.namespace}`] : []),
+    ...keyValueBlock("Labels", role.labels, 14, "="),
+    ...keyValueBlock("Annotations", role.annotations, 14, ": "),
+    "PolicyRule:",
+    rulesTable(role.rules),
+  ].join("\n");
+}
+
+/* ---- auth can-i -------------------------------------------------------------- */
+
+interface Identity {
+  user: string;
+  serviceAccount?: { namespace: string; name: string };
+  groups: string[];
+}
+
+function identityFrom(as: string | null): Identity | null {
+  if (!as) return null;
+  const match = /^system:serviceaccount:([^:]+):([^:]+)$/.exec(as);
+  if (match) {
+    return {
+      user: as,
+      serviceAccount: { namespace: match[1], name: match[2] },
+      groups: ["system:serviceaccounts", `system:serviceaccounts:${match[1]}`, "system:authenticated"],
+    };
+  }
+  return { user: as, groups: ["system:authenticated"] };
+}
+
+function subjectMatches(subject: Subject, identity: Identity): boolean {
+  if (subject.kind === "ServiceAccount") {
+    return (
+      identity.serviceAccount?.name === subject.name &&
+      identity.serviceAccount.namespace === subject.namespace
+    );
+  }
+  if (subject.kind === "User") return subject.name === identity.user;
+  return identity.groups.includes(subject.name);
+}
+
+function findRole(ref: BindingObject["roleRef"], namespace?: string): RoleObject | undefined {
+  return ref.kind === "ClusterRole"
+    ? clusterRoles.find((role) => role.name === ref.name)
+    : namespacedRoles.find((role) => role.name === ref.name && role.namespace === namespace);
+}
+
+/*
+ * Rules that apply to an identity. Cluster-wide checks (-A) only count
+ * ClusterRoleBindings; namespaced checks also count that namespace's
+ * RoleBindings.
+ */
+function rulesFor(identity: Identity, namespace: string | null): PolicyRule[] {
+  const bindings = [
+    ...clusterRoleBindings,
+    ...(namespace ? roleBindings.filter((binding) => binding.namespace === namespace) : []),
+  ].filter((binding) => binding.subjects.some((subject) => subjectMatches(subject, identity)));
+
+  return bindings.flatMap((binding) => findRole(binding.roleRef, binding.namespace)?.rules ?? []);
+}
+
+const RESOURCE_PLURALS: Record<string, string> = {
+  pod: "pods", po: "pods", secret: "secrets", node: "nodes", no: "nodes",
+  namespace: "namespaces", ns: "namespaces", configmap: "configmaps", cm: "configmaps",
+  service: "services", svc: "services", deployment: "deployments", deploy: "deployments",
+  serviceaccount: "serviceaccounts", sa: "serviceaccounts",
+  role: "roles", rolebinding: "rolebindings", clusterrole: "clusterroles",
+  clusterrolebinding: "clusterrolebindings",
+};
+
+function ruleAllows(rule: PolicyRule, verb: string, resource: string, resourceName?: string): boolean {
+  if (!rule.resources) return false;
+  const verbOk = rule.verbs.includes("*") || rule.verbs.includes(verb);
+  const resourceOk = rule.resources.includes("*") || rule.resources.includes(resource);
+  const nameOk = !rule.resourceNames || (resourceName !== undefined && rule.resourceNames.includes(resourceName));
+  return verbOk && resourceOk && nameOk;
+}
+
+function kubectlAuth(tokens: string[], flags: KubectlFlags): string {
+  const asToken = tokens.find((token) => token.startsWith("--as="));
+  const asIndex = tokens.indexOf("--as");
+  const as = asToken ? asToken.slice(5) : asIndex !== -1 ? tokens[asIndex + 1] ?? null : null;
+  const identity = identityFrom(as);
+  const namespace = flags.allNamespaces ? null : flags.namespace;
+
+  const words = tokens.filter(
+    (token, index) =>
+      !token.startsWith("-") &&
+      !["-n", "--namespace", "--as", "-o", "--output"].includes(tokens[index - 1] ?? ""),
+  );
+
+  if (words[0] !== "auth" || words[1] !== "can-i") {
+    return "error: unknown command. Try: kubectl auth can-i <verb> <resource> [--as=<user>] or kubectl auth can-i --list [--as=<user>]";
+  }
+
+  /* ivy is the cluster operator running this audit. */
+  const rules: PolicyRule[] = identity
+    ? rulesFor(identity, namespace)
+    : clusterRoles.find((role) => role.name === "cluster-admin")!.rules;
+
+  if (tokens.includes("--list")) {
+    const list: PolicyRule[] = [
+      ...rules,
+      { apiGroups: ["authorization.k8s.io"], resources: ["selfsubjectaccessreviews", "selfsubjectrulesreviews"], verbs: ["create"] },
+    ];
+    const seen = new Set<string>();
+    const rows = list
+      .flatMap((rule) =>
+        rule.nonResourceURLs
+          ? [["", `[${rule.nonResourceURLs.join(" ")}]`, "[]", `[${rule.verbs.join(" ")}]`]]
+          : (rule.resources ?? []).flatMap((resource) =>
+              (rule.apiGroups ?? [""]).map((group) => [
+                group ? `${resource}.${group}` : resource,
+                "[]",
+                `[${(rule.resourceNames ?? []).join(" ")}]`,
+                `[${rule.verbs.join(" ")}]`,
+              ]),
+            ),
+      )
+      .filter((row) => {
+        const key = row.join("|");
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    return table(["Resources", "Non-Resource URLs", "Resource Names", "Verbs"], rows);
+  }
+
+  const [verb, target] = words.slice(2);
+  if (!verb || !target) {
+    return "error: you must specify two arguments: verb resource or --list";
+  }
+
+  const [resourceRaw, resourceName] = target.split("/");
+  const resource = RESOURCE_PLURALS[resourceRaw] ?? resourceRaw;
+  const allowed = rules.some((rule) => ruleAllows(rule, verb, resource, resourceName));
+  return allowed ? "yes" : "no";
+}
+
+/* ---- base64 (for decoding Secret values) --------------------------------- */
+
+function base64Decode(input: string): string {
+  const normalised = input.trim().replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalised + "=".repeat((4 - (normalised.length % 4)) % 4);
+  try {
+    return atob(padded);
+  } catch {
+    return "base64: invalid input";
+  }
+}
+
+/*
+ * Supports `base64 -d <value>`, `echo <value> | base64 -d` and
+ * `echo <value> | base64 --decode`. Returns null if the command isn't one
+ * of those shapes.
+ */
+function base64Command(raw: string): string | null {
+  const piped = /^echo\s+(?:-n\s+)?['"]?([^'"|]+?)['"]?\s*\|\s*base64\s+(?:-d|--decode|-D)\s*$/.exec(raw);
+  if (piped) return base64Decode(piped[1]);
+
+  const direct = /^base64\s+(?:-d|--decode|-D)\s+(\S+)\s*$/.exec(raw);
+  if (direct) return base64Decode(direct[1]);
+
+  if (/^base64(\s|$)/.test(raw)) return "usage: base64 -d <value>  or  echo <value> | base64 -d";
+  return null;
+}
+
+/* ---- dispatch ------------------------------------------------------------ */
+
+const RBAC_RESOURCES: Record<string, string> = {
+  secret: "secrets", secrets: "secrets",
+  sa: "serviceaccounts", serviceaccount: "serviceaccounts", serviceaccounts: "serviceaccounts",
+  clusterrolebinding: "clusterrolebindings", clusterrolebindings: "clusterrolebindings",
+  rolebinding: "rolebindings", rolebindings: "rolebindings",
+  clusterrole: "clusterroles", clusterroles: "clusterroles",
+  role: "roles", roles: "roles",
+};
+
+function kubectlRbac(verb: string, resource: string, name: string | undefined, flags: KubectlFlags): string | null {
+  const kind = RBAC_RESOURCES[resource];
+  if (!kind || (verb !== "get" && verb !== "describe")) return null;
+
+  if (verb === "get") {
+    switch (kind) {
+      case "secrets": return getSecrets(name, flags);
+      case "serviceaccounts": return getServiceAccounts(name, flags);
+      case "clusterrolebindings": return getBindings(clusterRoleBindings, kind, false, name, flags);
+      case "rolebindings": return getBindings(roleBindings, kind, true, name, flags);
+      case "clusterroles": return getRoles(clusterRoles, kind, false, name, flags);
+      case "roles": return getRoles(namespacedRoles, kind, true, name, flags);
+    }
+  }
+
+  const describeAll = <T extends { name: string; namespace?: string }>(
+    source: T[],
+    namespaced: boolean,
+    render: (item: T) => string,
+  ): string => {
+    const scoped = namespaced ? inScope(source, flags) : source;
+    const visible = name ? scoped.filter((item) => item.name === name) : scoped;
+    if (name && visible.length === 0) return notFound(kind, name);
+    if (visible.length === 0) return noneFound(flags, namespaced);
+    return visible.map(render).join("\n\n\n");
+  };
+
+  switch (kind) {
+    case "secrets": return describeAll(secrets, true, describeSecret);
+    case "serviceaccounts": return describeAll(serviceAccounts, true, describeServiceAccount);
+    case "clusterrolebindings": return describeAll(clusterRoleBindings, false, describeBinding);
+    case "rolebindings": return describeAll(roleBindings, true, describeBinding);
+    case "clusterroles": return describeAll(clusterRoles, false, describeRole);
+    case "roles": return describeAll(namespacedRoles, true, describeRole);
+  }
+
+  return null;
+}
+
 function kubectl(raw: string): string {
   const tokens = raw.split(/\s+/).slice(1);
   const manifestAction = parseManifestAction(tokens);
@@ -1776,15 +2638,25 @@ function kubectl(raw: string): string {
   const positional = head.filter(
     (token, index) =>
       !token.startsWith("-") &&
-      !["-n", "--namespace", "-o", "--output", "-l", "--selector"].includes(
+      !["-n", "--namespace", "-o", "--output", "-l", "--selector", "--as"].includes(
         head[index - 1] ?? "",
       ),
   );
 
-  const [verb, resource, name] = positional;
+  const [verb, rawResource, rawName] = positional;
   const flags = parseFlags(head);
 
   if (!verb) return kubectlUsage();
+
+  if (verb === "auth") return kubectlAuth(head, flags);
+
+  /* Accept kubectl's `<resource>/<name>` form, e.g. clusterrolebinding/foo. */
+  const slashed = verb !== "exec" && rawResource?.includes("/");
+  const resource = slashed ? rawResource!.split("/")[0] : rawResource;
+  const name = slashed ? rawResource!.split("/").slice(1).join("/") : rawName;
+
+  const rbacOutput = resource ? kubectlRbac(verb, resource, name, flags) : null;
+  if (rbacOutput !== null) return rbacOutput;
 
   const isPod = ["pod", "pods", "po"].includes(resource ?? "");
   const isNode = ["node", "nodes", "no"].includes(resource ?? "");
@@ -2362,6 +3234,9 @@ async function runCommand(command: string): Promise<string> {
   /* ---------------------------------------------------------------------- */
   /* Node shell                                                             */
   /* ---------------------------------------------------------------------- */
+
+  const base64Output = base64Command(raw);
+  if (base64Output !== null) return base64Output;
 
   const [binary, ...args] = raw.split(/\s+/);
 
