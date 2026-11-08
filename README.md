@@ -68,6 +68,7 @@ The source identifies the accepted answer as ```recommendation-c```.
 ```
 submit recommendation-c
 ```
+<br/><br/>
 
 ### K02: Overly Permissive Authorisation Configurations
 This command dumps every secret. One is a long-lived token which the Kubernetes guide flags as a risk:
@@ -107,6 +108,7 @@ You'll see that ```report-bot``` is bound to ```cluster-admin```. The intended a
 submit report-bot
 ```
 The challenge source confirms both the file contents and expected answer.
+<br/><br/>
 
 ### K03: Secrets Management Failures
 - This commands shows the app dumping its environment at startup.
@@ -118,119 +120,35 @@ kubectl logs billing-api-b -n customer-b
 ```
 submit bt-lab-7f3a9c2e5d1b
 ```
-
-Again, follow the objective:
-```
-cat ~/manifests/billing-api.yaml
-```
-```
-cat ~/evidence/secret-review.txt
-```
-Look at the ```secretKeyRef```:
-```
-name: billing-api-token
-```
-So:
-```
-submit billing-api-token
-```
+<br/><br/>
 
 ### K04: Lack Of Cluster-Level Policy Enforcement
-
-```
-cat ~/manifests/policy-audit.yaml
-```
-```
-cat ~/evidence/policy-review.txt
-```
-The interesting field is:
-```
-expected-policy: restricted-workloads
-status: missing
-```
-Then:
-```
-submit restricted-workloads
-```
+- The objective says a tenant workload is **BLOCKED**
+- ```kubectl get deploy -A``` shows ```customer-e/payments-worker``` at ```0/1```.
+- ```kubectl get events -n customer-e``` shows Kyverno denying each pod creation and names the ```edera-tenant-onboarding``` policy, but not the label.
+- The player reads the rule with ```kubectl get cpol edera-tenant-onboarding -o yaml```.
+- Pods are denied unless the namespace has ```edera.dev/isolation: enforced```.
+- ```kubectl get ns --show-labels``` confirms ```customer-e``` is the only namespace without it.
+- ```kubectl label ns customer-e edera.dev/isolation=enforced```. The ReplicaSet retry is admitted, the pod starts ```Running``` in its own Edera zone, and the flag is captured.
+<br/><br/>
 
 ### K05: Missing Network Segmentation Controls
-```
-cat ~/manifests/network-audit.yaml
-```
-```
-cat ~/evidence/network-review.txt
-```
-You're looking for the namespace with no default-deny ingress:
-```
-submit customer-b
-```
-The source explicitly describes ```customer-b``` as the affected namespace.
+<br/><br/>
 
 ### K06: Overly-Exposed Kubernetes Components
-```
-cat ~/manifests/component-exposure.yaml
-```
-```
-cat ~/evidence/component-review.txt
-```
-The service is a public ```LoadBalancer``` named ```metrics-dashboard```, so:
-```
-submit metrics-dashboard
-```
+<br/><br/>
 
 ### K07: Misconfigured And Vulnerable Cluster Components
-```
-cat ~/manifests/vulnerable-component.yaml
-```
-Notice:
-```
-image: example.invalid/legacy-metrics:latest
-```
-The workload name is:
-```
-submit legacy-metrics
-```
-The challenge specifically says the objective is to find the workload using an unpinned image tag.
+<br/><br/>
 
 ### K08: Cluster-To-Cloud Lateral Movement
-```
-cat ~/manifests/cloud-identity.yaml
-```
-```
-cat ~/evidence/cloud-review.txt
-```
-The affected workload is:
-```
-submit invoice-exporter
-```
-The source also notes that the cloud endpoints in this challenge are simulated, so you aren't interacting with real cloud credentials.
+<br/><br/>
+
 
 ### K09: Broken Authentication Mechanisms
-```
-cat ~/manifests/authentication-audit.yaml
-```
-```
-cat ~/evidence/auth-review.txt
-```
-You'll find:
-```
-allowUnauthenticatedHealthAndAdmin: "true"
-```
-The component is:
-```
-submit legacy-auth-proxy
-```
+<br/><br/>
 
 ### K10: Inadequate Logging And Monitoring
-```
-cat ~/manifests/audit-policy.yaml
-```
-```
-cat ~/evidence/audit-review.txt
-```
-The important bits are the omitted ```secrets``` resource and missing ```RequestResponse``` coverage. The expected answer is:
-```
-submit secrets-metadata-and-response
-```
+<br/><br/>
 
 The challenge source lists this as the final stage.
