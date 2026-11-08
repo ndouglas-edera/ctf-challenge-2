@@ -357,7 +357,7 @@ const stages: Stage[] = [
   {
     title: "K01 · Insecure workload configurations",
     objective: "Find the pod that allows privilege escalation.",
-    brief: ["Run `kubectl get pods -A`, then inspect pod security settings with `kubectl describe pod <name> -n <namespace>` or `kubectl get pod <name> -n <namespace> -o yaml`."],
+    brief: ["Read more about Security Contexts: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/", "Submit the pod name."],
     answers: ["recommendation-c", "customer-c/recommendation-c"],
     flag: "EDERA{K01_INSECURE_WORKLOAD}",
     reward: ["`allowPrivilegeEscalation: true` permits a process to gain privileges beyond its parent, including through setuid programs.", "Set `allowPrivilegeEscalation: false` and apply a consistent workload security baseline."],
@@ -373,7 +373,7 @@ const stages: Stage[] = [
   {
     title: "K03 · Secrets management failures",
     objective: "Find the credential leaked in plaintext in a workload's logs.",
-    brief: ["Read up on secrets in application logs: https://kubernetes-top10.owasp.org/2025/en/src/K03-Secrets-Management-Failures.html", "Submit the leaked secret value."],
+    brief: ["Read up on Secrets good practices: https://kubernetes.io/docs/concepts/security/secrets-good-practices/", "Submit the leaked secret value."],
     answers: ["bt-lab-7f3a9c2e5d1b", "billing_token=bt-lab-7f3a9c2e5d1b"],
     nudges: { "billing-api-token": "Close: that's the Secret's name. Submit the leaked value itself." },
     flag: "EDERA{K03_EXPOSED_SECRET}",
@@ -382,18 +382,24 @@ const stages: Stage[] = [
   {
     title: "K04 · Lack of cluster-level policy enforcement",
     objective: "A tenant's workload is being blocked from starting. Find out why and get it running.",
-    brief: ["Read up on cluster-level policy enforcement: https://kubernetes-top10.owasp.org/2025/en/src/K04-Lack-Of-Cluster-Level-Policy-Enforcement.html", "The flag is captured automatically once the workload is admitted."],
+    brief: ["Read up on Kyverno validate rules: https://release-1-18-0.kyverno.io/docs/policy-types/cluster-policy/validate/", "The flag is captured automatically once the workload is admitted."],
     answers: ["edera.dev/isolation=enforced"],
     flag: "EDERA{K04_POLICY_ENFORCED}",
     reward: ["edera-tenant-onboarding denied every Pod in customer-e until the namespace opted in.", "Once labelled, payments-worker was admitted and started in its own Edera zone.", "Enforce admission policy cluster-wide, rather than relying on convention."],
   },
   {
     title: "K05 · Missing network segmentation",
-    objective: "Find the namespace without effective ingress isolation.",
-    brief: ["Inspect ~/manifests/network-audit.yaml and ~/evidence/network-review.txt.", "Submit the affected namespace."],
-    answers: ["customer-b"],
+    objective: "One NetworkPolicy isn't protecting what its author intended. Find it.",
+    brief: ["Read up on NetworkPolicies: https://kubernetes.io/docs/concepts/services-networking/network-policies/", "Submit the name of the misconfigured NetworkPolicy."],
+    answers: ["billing-api-ingress", "customer-b/billing-api-ingress"],
+    nudges: {
+      "customer-b": "Right namespace. Which NetworkPolicy in it is misconfigured?",
+      "biling-api": "That's the typo! Submit the name of the NetworkPolicy it's in.",
+      "app=biling-api": "That's the typo! Submit the name of the NetworkPolicy it's in.",
+      "billing-api": "That's the workload left exposed. Submit the name of the NetworkPolicy that should have protected it.",
+    },
     flag: "EDERA{K05_NETWORK_SEGMENTATION}",
-    reward: ["Namespaces alone do not provide network isolation.", "Use NetworkPolicies and verify allowed flows."],
+    reward: ["billing-api-ingress selected app=biling-api, which matches no pods.", "With nothing selected, billing-api accepted traffic from every namespace.", "A selector typo fails silently: pair a default-deny with allow rules, and test the flows."],
   },
   {
     title: "K06 · Overly exposed Kubernetes components",
@@ -625,6 +631,10 @@ const helpSections: HelpSection[] = [
       {
         command: "kubectl get events [-n <namespace>] [-A]",
         description: "Show recent cluster events, such as failed Pod creation.",
+      },
+      {
+        command: "kubectl get networkpolicies [-A] [-o yaml]",
+        description: "List NetworkPolicies and the pods they select.",
       },
       {
         command: "kubectl get nodes [-o wide] [--show-labels]",
@@ -1217,6 +1227,7 @@ function kubectlUsage(): string {
     "  kubectl label namespace <name> <key>=<value> [--overwrite]",
     "  kubectl get clusterpolicies [-o yaml]",
     "  kubectl get deployments|events [-n <namespace>] [-A]",
+    "  kubectl get networkpolicies [-A] [-o yaml]",
     "  kubectl get runtimeclass",
     "  kubectl get serviceaccounts|secrets [-A] [-o yaml]",
     "  kubectl get clusterroles|clusterrolebindings [-o wide|yaml]",
@@ -1257,7 +1268,7 @@ function getPods(flags: KubectlFlags): string {
 
     if (flags.allNamespaces) row.unshift(pod.namespace);
     if (flags.wide) {
-      row.push(`10.244.1.${21 + pods.indexOf(pod)}`, pod.node);
+      row.push(podIp(pod), pod.node);
     }
     if (flags.showLabels) row.push(labelString(pod));
 
@@ -1265,6 +1276,21 @@ function getPods(flags: KubectlFlags): string {
   });
 
   return table(headers, rows);
+}
+
+/* Stable per-pod IPs, so pod logs can reference them reliably. */
+const POD_IPS: Record<string, string> = {
+  "image-processor-a": "10.244.1.21",
+  "billing-api-b": "10.244.1.22",
+  "edera-ebpf-test": "10.244.1.23",
+  "analytics-batch-d": "10.244.1.24",
+  "recommendation-c": "10.244.1.25",
+  "gpu-workload": "10.244.1.26",
+  "payments-worker-6d8f7b9c4-x2k9q": "10.244.1.27",
+};
+
+function podIp(pod: Pod): string {
+  return POD_IPS[pod.name] ?? `10.244.1.${40 + (pods.indexOf(pod) % 200)}`;
 }
 
 function resolvePod(name: string, flags: KubectlFlags): Pod | undefined {
@@ -2705,7 +2731,11 @@ const podLogs: Record<string, string[]> = {
     "2026-11-08T08:15:47.662Z INFO  POST /v1/invoices 201 48ms",
     "2026-11-08T08:16:20.981Z WARN  payment gateway timeout, retrying (attempt 1/3)",
     "2026-11-08T08:16:21.733Z INFO  POST /v1/invoices 201 802ms",
-    "2026-11-08T08:16:42.004Z INFO  GET /healthz 200 1ms",
+    "2026-11-08T08:16:42.004Z INFO  GET /healthz 200 1ms remote=10.244.1.1",
+    "2026-11-08T08:17:05.271Z INFO  GET /v1/invoices?status=open 200 18ms remote=10.244.1.24",
+    "2026-11-08T08:17:31.640Z INFO  GET /v1/customers/export 200 231ms remote=10.244.1.25",
+    "2026-11-08T08:17:58.102Z INFO  GET /v1/invoices?status=open 200 16ms remote=10.244.1.24",
+    "2026-11-08T08:18:12.004Z INFO  GET /healthz 200 1ms remote=10.244.1.1",
   ],
   "edera-ebpf-test": [
     "2026-11-08T08:11:58.640Z starting eBPF probe test",
@@ -2721,6 +2751,9 @@ const podLogs: Record<string, string[]> = {
     "2026-11-08T08:10:04.102Z ERROR failed to write bucket 2026-11-07T23:00: connection reset by peer",
     "2026-11-08T08:10:05.390Z INFO  retry succeeded for bucket 2026-11-07T23:00",
     "2026-11-08T08:10:05.391Z INFO  job complete in 5.4s",
+    "2026-11-08T08:17:05.262Z INFO  enriching rollup with invoice totals from billing-api.customer-b.svc:8080",
+    "2026-11-08T08:17:05.290Z INFO  fetched 412 open invoices from billing-api.customer-b.svc:8080",
+    "2026-11-08T08:17:10.118Z WARN  GET http://recommendation.customer-c.svc:8080/v1/stats timed out after 5s",
   ],
   "recommendation-c": [
     "2026-11-08T08:13:20.550Z INFO  recommendation 2.2.0 starting",
@@ -2728,6 +2761,8 @@ const podLogs: Record<string, string[]> = {
     "2026-11-08T08:13:22.901Z INFO  warmed model cache (12,400 items)",
     "2026-11-08T08:14:01.337Z INFO  GET /v1/recommendations?user=8812 200 31ms",
     "2026-11-08T08:14:44.019Z INFO  GET /v1/recommendations?user=1907 200 28ms",
+    "2026-11-08T08:17:26.402Z WARN  GET http://analytics.customer-d.svc:8080/v1/trending timed out after 5s; using cached trends",
+    "2026-11-08T08:17:31.409Z INFO  refreshed customer profiles from billing-api.customer-b.svc:8080 (1,920 records)",
   ],
   "gpu-workload": [
     "==========",
@@ -3211,6 +3246,174 @@ function getEvents(flags: KubectlFlags): string {
     : table(headers, rows.map((row) => row.slice(1)));
 }
 
+/* -------------------------------------------------------------------------- */
+/* NetworkPolicies (K05)                                                      */
+/*                                                                            */
+/* Every tenant has a default-deny plus scoped allows, except customer-b,     */
+/* which relies on one policy for billing-api. Its podSelector says           */
+/* app=biling-api (one "l"), matches no pods, and so isolates nothing:        */
+/* billing-api accepts traffic from every namespace. The pod logs show it.    */
+/* -------------------------------------------------------------------------- */
+
+type LabelSelector = Record<string, string>;
+
+interface NetworkPolicyPeer {
+  podSelector?: LabelSelector;
+  namespaceSelector?: LabelSelector;
+}
+
+interface NetworkPolicyObject {
+  name: string;
+  namespace: string;
+  podSelector: LabelSelector;
+  ingress?: { from?: NetworkPolicyPeer[]; ports?: { port: number; protocol: string }[] }[];
+  policyTypes: string[];
+  created: string;
+  age: string;
+}
+
+const networkPolicies: NetworkPolicyObject[] = [
+  ...["customer-a", "customer-c", "customer-d", "platform", "customer-e"].map((namespace) => ({
+    name: "default-deny-ingress",
+    namespace,
+    podSelector: {},
+    policyTypes: ["Ingress"],
+    created: namespace === "customer-e" ? "2026-11-06 15:58:40" : "2026-09-28 09:20:11",
+    age: namespace === "customer-e" ? "2d" : "41d",
+  })),
+  {
+    name: "allow-image-uploads",
+    namespace: "customer-a",
+    podSelector: { app: "image-processor" },
+    ingress: [
+      {
+        from: [{ namespaceSelector: { "kubernetes.io/metadata.name": "customer-a" } }],
+        ports: [{ port: 8080, protocol: "TCP" }],
+      },
+    ],
+    policyTypes: ["Ingress"],
+    created: "2026-09-29 11:02:47",
+    age: "40d",
+  },
+  {
+    name: "billing-api-ingress",
+    namespace: "customer-b",
+    podSelector: { app: "biling-api" },
+    ingress: [
+      {
+        from: [{ podSelector: {} }],
+        ports: [{ port: 8080, protocol: "TCP" }],
+      },
+    ],
+    policyTypes: ["Ingress"],
+    created: "2026-10-01 16:44:09",
+    age: "38d",
+  },
+  {
+    name: "allow-recommendation-api",
+    namespace: "customer-c",
+    podSelector: { app: "recommendation" },
+    ingress: [
+      {
+        from: [{ podSelector: {} }],
+        ports: [{ port: 8080, protocol: "TCP" }],
+      },
+    ],
+    policyTypes: ["Ingress"],
+    created: "2026-10-04 10:15:32",
+    age: "35d",
+  },
+  {
+    name: "allow-metrics-scrape",
+    namespace: "customer-d",
+    podSelector: { app: "analytics-batch" },
+    ingress: [
+      {
+        from: [{ namespaceSelector: { "kubernetes.io/metadata.name": "platform" } }],
+        ports: [{ port: 9090, protocol: "TCP" }],
+      },
+    ],
+    policyTypes: ["Ingress"],
+    created: "2026-10-12 08:37:55",
+    age: "27d",
+  },
+];
+
+function selectorString(selector: LabelSelector): string {
+  const pairs = Object.entries(selector);
+  return pairs.length === 0 ? "<none>" : pairs.map(([key, value]) => `${key}=${value}`).join(",");
+}
+
+function networkPolicyManifest(policy: NetworkPolicyObject): object {
+  const selector = (labels: LabelSelector) =>
+    Object.keys(labels).length === 0 ? {} : { matchLabels: labels };
+
+  return {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name: policy.name, namespace: policy.namespace },
+    spec: {
+      ingress: policy.ingress?.map((rule) => ({
+        from: rule.from?.map((peer) => ({
+          namespaceSelector: peer.namespaceSelector && selector(peer.namespaceSelector),
+          podSelector: peer.podSelector && selector(peer.podSelector),
+        })),
+        ports: rule.ports,
+      })),
+      podSelector: selector(policy.podSelector),
+      policyTypes: policy.policyTypes,
+    },
+  };
+}
+
+function getNetworkPolicies(name: string | undefined, flags: KubectlFlags): string {
+  const scoped = inScope(networkPolicies, flags);
+  const visible = name ? scoped.filter((policy) => policy.name === name) : scoped;
+
+  if (name && visible.length === 0) return notFound("networkpolicies.networking.k8s.io", name);
+  if (visible.length === 0) return noneFound(flags, true);
+
+  if (flags.yaml) return yamlDocument(visible.map(networkPolicyManifest), Boolean(name));
+
+  return withNamespaceColumn(
+    ["NAME", "POD-SELECTOR", "AGE"],
+    visible.map((policy) => [policy.name, selectorString(policy.podSelector), policy.age]),
+    visible,
+    flags,
+  );
+}
+
+function describeNetworkPolicy(policy: NetworkPolicyObject): string {
+  const podSelector = Object.keys(policy.podSelector).length === 0
+    ? "<none> (Allowing the specific traffic to all pods in this namespace)"
+    : selectorString(policy.podSelector);
+
+  const ingress = policy.ingress?.length
+    ? policy.ingress.flatMap((rule) => [
+        ...(rule.ports ?? []).map((port) => `    To Port: ${port.port}/${port.protocol}`),
+        "    From:",
+        ...(rule.from ?? []).flatMap((peer) => [
+          ...(peer.namespaceSelector ? [`      NamespaceSelector: ${selectorString(peer.namespaceSelector)}`] : []),
+          ...(peer.podSelector ? [`      PodSelector: ${selectorString(peer.podSelector)}`] : []),
+        ]),
+      ])
+    : ["    <none> (Selected pods are isolated for ingress connectivity)"];
+
+  return [
+    `Name:         ${policy.name}`,
+    `Namespace:    ${policy.namespace}`,
+    `Created on:   ${policy.created} +0000 UTC`,
+    "Labels:       <none>",
+    "Annotations:  <none>",
+    "Spec:",
+    `  PodSelector:     ${podSelector}`,
+    "  Allowing ingress traffic:",
+    ...ingress,
+    "  Not affecting egress traffic",
+    `  Policy Types: ${policy.policyTypes.join(", ")}`,
+  ].join("\n");
+}
+
 function kubectl(raw: string): string {
   const tokens = raw.split(/\s+/).slice(1);
   const manifestAction = parseManifestAction(tokens);
@@ -3281,6 +3484,16 @@ function kubectl(raw: string): string {
   if (verb === "get" && isDeployment) return getDeployments(name, flags);
   if (verb === "describe" && isDeployment) return describeDeployment(name, flags);
   if (verb === "get" && isEvent) return getEvents(flags);
+
+  const isNetworkPolicy = ["networkpolicy", "networkpolicies", "netpol"].includes(resource ?? "");
+  if (verb === "get" && isNetworkPolicy) return getNetworkPolicies(name, flags);
+  if (verb === "describe" && isNetworkPolicy) {
+    const scoped = inScope(networkPolicies, flags);
+    const visible = name ? scoped.filter((policy) => policy.name === name) : scoped;
+    if (name && visible.length === 0) return notFound("networkpolicies.networking.k8s.io", name);
+    if (visible.length === 0) return noneFound(flags, true);
+    return visible.map(describeNetworkPolicy).join("\n\n\n");
+  }
   if (verb === "get" && isRuntimeClass) return getRuntimeClass();
 
   if (verb === "delete" && isPod) return deletePod(name, flags);
