@@ -70,6 +70,31 @@ submit recommendation-c
 ```
 
 ### K02: Overly Permissive Authorisation Configurations
+This command dumps every secret. One is a long-lived token which the Kubernetes guide flags as a risk:
+```
+kubectl get secrets -A -o yaml
+```
+
+You can actually decodes it to a JSON Web Token naming the account.
+```
+echo bGFiLW9ubHktbW9kZWwta2V5LTAwMDA= | base64 -d
+```
+
+The **binding** shows ```report-bot-admin``` granting ```cluster-admin``` to ```customer-b/report-bot```
+```
+kubectl get clusterrolebindings -o wide
+```
+
+The below commands should return ```*.*``` with ```[*]```
+```
+kubectl auth can-i --list --as=system:serviceaccount:customer-b:report-bot
+```
+
+The source identifies the accepted answer as ```customer-b/report-bot```.
+```
+submit customer-b/report-bot
+```
+
 The objective points you directly at the relevant files:
 ```
 cat ~/manifests/rbac-audit.yaml
