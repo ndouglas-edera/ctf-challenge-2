@@ -136,7 +136,8 @@ submit bt-lab-7f3a9c2e5d1b
 
 ### K05: Missing Network Segmentation Controls
 - Every tenant has a ```default-deny-ingress``` plus scoped allow rules, except ```customer-b```.
-- It relies on a single policy, ```billing-api-ingress```, whose podSelector is ```app: biling-api``` (one “l”). That matches no pods, so billing-api isn’t isolated at all.
+- It relies on a single policy, ```billing-api-ingress```, whose podSelector is ```app: biling-api``` (one “l”).
+- That matches no pods, so the ```billing-api``` isn’t isolated at all.
 - ```kubectl get netpol -A``` shows the misspelled selector in the ```POD-SELECTOR``` column if you look closely.
 - Comparing it with ```kubectl get pods --show-labels``` (```app=billing-api```) confirms it.
 - ```analytics-batch``` and ```recommendation``` successfully call ```billing-api``` across namespaces, but their calls into other tenants time out.
