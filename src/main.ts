@@ -329,6 +329,8 @@ interface Stage {
   brief: string[];
   /* Accepted answers, compared lowercase after trimming. */
   answers: string[];
+  /* Wrong-but-close answers mapped to a nudge, compared lowercase. */
+  nudges?: Record<string, string>;
   flag: string;
   reward: string[];
 }
@@ -352,11 +354,12 @@ const stages: Stage[] = [
   },
   {
     title: "K03 · Secrets management failures",
-    objective: "Identify the secret exposed through a workload environment variable.",
-    brief: ["Inspect ~/manifests/billing-api.yaml and ~/evidence/secret-review.txt.", "Submit the exposed Secret name."],
-    answers: ["billing-api-token"],
+    objective: "Find the credential leaked in plaintext in a workload's logs.",
+    brief: ["Read up on secrets in application logs: https://kubernetes-top10.owasp.org/2025/en/src/K03-Secrets-Management-Failures.html", "Submit the leaked secret value."],
+    answers: ["bt-lab-7f3a9c2e5d1b", "billing_token=bt-lab-7f3a9c2e5d1b"],
+    nudges: { "billing-api-token": "Close: that's the Secret's name. Submit the leaked value itself." },
     flag: "EDERA{K03_EXPOSED_SECRET}",
-    reward: ["Rotate exposed credentials and restrict Secret access.", "Avoid copying credentials into manifests or environment dumps."],
+    reward: ["Anyone with `get` on `pods/log`, or access to your log platform, could read that token.", "Never log configuration or environment values; rotate the credential and restrict `pods/log` access."],
   },
   {
     title: "K04 · Lack of cluster-level policy enforcement",
@@ -635,6 +638,10 @@ const helpSections: HelpSection[] = [
       {
         command: "kubectl exec <name> -n <namespace> -- <command>",
         description: "Execute a command inside a pod.",
+      },
+      {
+        command: "kubectl logs <name> -n <namespace> [--tail=<n>]",
+        description: "Print a pod's container logs (stdout and stderr).",
       },
     ],
   },
@@ -1181,6 +1188,7 @@ function kubectlUsage(): string {
     "  kubectl delete pod <name> -n <namespace>",
     "  kubectl delete -f <file|directory>",
     "  kubectl exec <name> -n <namespace> -- <command>",
+    "  kubectl logs <name> -n <namespace> [--tail=<n>]",
   ].join("\n");
 }
 
@@ -2029,7 +2037,7 @@ const secrets: SecretObject[] = [
     namespace: "customer-b",
     type: "Opaque",
     age: "38d",
-    data: { token: "lab-only-billing-token-0000" },
+    data: { token: "bt-lab-7f3a9c2e5d1b" },
   },
   {
     name: "report-bot-token",
@@ -2629,6 +2637,102 @@ function kubectlRbac(verb: string, resource: string, name: string | undefined, f
   return null;
 }
 
+/* -------------------------------------------------------------------------- */
+/* kubectl logs (K03)                                                         */
+/*                                                                            */
+/* billing-api dumps its environment at startup. Its redaction filter only    */
+/* matches names containing PASSWORD, so BILLING_TOKEN is logged in plain     */
+/* text. The other workloads redact properly and act as red herrings.         */
+/* -------------------------------------------------------------------------- */
+
+const podLogs: Record<string, string[]> = {
+  "image-processor-a": [
+    "2026-11-08T08:12:41.204Z INFO  image-processor 1.4.2 starting",
+    "2026-11-08T08:12:41.209Z INFO  config: REGISTRY=registry.customer-a.internal REGISTRY_AUTH=[REDACTED]",
+    "2026-11-08T08:12:41.377Z INFO  worker pool started (4 workers)",
+    "2026-11-08T08:13:02.018Z INFO  processed thumbnail batch 1182 (64 images, 2.1s)",
+    "2026-11-08T08:13:31.552Z INFO  processed thumbnail batch 1183 (64 images, 1.9s)",
+    "2026-11-08T08:14:05.330Z WARN  skipped corrupt upload img_88213.heic",
+    "2026-11-08T08:14:09.871Z INFO  processed thumbnail batch 1184 (63 images, 2.0s)",
+  ],
+  "billing-api-b": [
+    "2026-11-08T08:14:02.118Z INFO  billing-api 3.0.1 starting",
+    "2026-11-08T08:14:02.120Z INFO  loading configuration from environment",
+    "2026-11-08T08:14:02.121Z DEBUG env BILLING_REGION=eu-west-1",
+    "2026-11-08T08:14:02.121Z DEBUG env BILLING_DB_HOST=billing-db.customer-b.svc.cluster.local",
+    "2026-11-08T08:14:02.121Z DEBUG env BILLING_DB_USER=billing",
+    "2026-11-08T08:14:02.121Z DEBUG env BILLING_DB_PASSWORD=********",
+    "2026-11-08T08:14:02.121Z DEBUG env BILLING_TOKEN=bt-lab-7f3a9c2e5d1b",
+    "2026-11-08T08:14:02.122Z DEBUG env LOG_LEVEL=debug",
+    "2026-11-08T08:14:02.305Z INFO  connected to billing-db.customer-b.svc.cluster.local:5432",
+    "2026-11-08T08:14:02.311Z INFO  listening on :8080",
+    "2026-11-08T08:14:12.004Z INFO  GET /healthz 200 1ms",
+    "2026-11-08T08:15:47.662Z INFO  POST /v1/invoices 201 48ms",
+    "2026-11-08T08:16:20.981Z WARN  payment gateway timeout, retrying (attempt 1/3)",
+    "2026-11-08T08:16:21.733Z INFO  POST /v1/invoices 201 802ms",
+    "2026-11-08T08:16:42.004Z INFO  GET /healthz 200 1ms",
+  ],
+  "edera-ebpf-test": [
+    "2026-11-08T08:11:58.640Z starting eBPF probe test",
+    "2026-11-08T08:11:58.702Z attached kprobe: do_sys_openat2",
+    "2026-11-08T08:11:58.703Z attached tracepoint: sched/sched_process_exec",
+    "2026-11-08T08:12:28.703Z events/s: 412",
+    "2026-11-08T08:12:58.703Z events/s: 398",
+  ],
+  "analytics-batch-d": [
+    "2026-11-08T08:10:00.012Z INFO  analytics-batch 0.9.0 job=nightly-rollup",
+    "2026-11-08T08:10:00.015Z INFO  db: host=analytics-db.customer-d.svc user=analytics password=[REDACTED]",
+    "2026-11-08T08:10:03.448Z INFO  rolled up 1,284,113 events into 96 hourly buckets",
+    "2026-11-08T08:10:04.102Z ERROR failed to write bucket 2026-11-07T23:00: connection reset by peer",
+    "2026-11-08T08:10:05.390Z INFO  retry succeeded for bucket 2026-11-07T23:00",
+    "2026-11-08T08:10:05.391Z INFO  job complete in 5.4s",
+  ],
+  "recommendation-c": [
+    "2026-11-08T08:13:20.550Z INFO  recommendation 2.2.0 starting",
+    "2026-11-08T08:13:20.552Z INFO  model endpoint configured (MODEL_API_KEY=***e0f1, 24 chars)",
+    "2026-11-08T08:13:22.901Z INFO  warmed model cache (12,400 items)",
+    "2026-11-08T08:14:01.337Z INFO  GET /v1/recommendations?user=8812 200 31ms",
+    "2026-11-08T08:14:44.019Z INFO  GET /v1/recommendations?user=1907 200 28ms",
+  ],
+  "gpu-workload": [
+    "==========",
+    "== CUDA ==",
+    "==========",
+    "CUDA Version 13.3.0",
+    "Container image Copyright (c) NVIDIA CORPORATION. All rights reserved.",
+    "[workload] device 0: NVIDIA L4 (zone passthrough)",
+    "[workload] batch 1/50 complete",
+  ],
+};
+
+function kubectlLogs(head: string[], target: string | undefined, flags: KubectlFlags): string {
+  let candidates: Pod[];
+
+  if (flags.selector) {
+    candidates = scopedPods(flags);
+    if (candidates.length === 0) return noneFound(flags, true);
+  } else {
+    if (!target) {
+      return "error: expected 'logs [-f] [-p] (POD | TYPE/NAME) [-c CONTAINER]'.\nPOD or TYPE/NAME is a required argument for the logs command";
+    }
+    const name = target.includes("/") ? target.split("/").slice(1).join("/") : target;
+    const pod = resolvePod(name, { ...flags, allNamespaces: false });
+    if (!pod) return notFound("pods", name);
+    candidates = [pod];
+  }
+
+  const tailToken = head.find((token) => token.startsWith("--tail="));
+  const tailIndex = head.indexOf("--tail");
+  const tail = Number(tailToken ? tailToken.slice(7) : tailIndex !== -1 ? head[tailIndex + 1] : NaN);
+
+  const output = candidates.flatMap((pod) => {
+    const lines = podLogs[pod.name] ?? [`${pod.app}: started`];
+    return Number.isFinite(tail) && tail >= 0 ? lines.slice(Math.max(0, lines.length - tail)) : lines;
+  });
+
+  return output.join("\n");
+}
+
 function kubectl(raw: string): string {
   const tokens = raw.split(/\s+/).slice(1);
   const manifestAction = parseManifestAction(tokens);
@@ -2644,7 +2748,7 @@ function kubectl(raw: string): string {
   const positional = head.filter(
     (token, index) =>
       !token.startsWith("-") &&
-      !["-n", "--namespace", "-o", "--output", "-l", "--selector", "--as"].includes(
+      !["-n", "--namespace", "-o", "--output", "-l", "--selector", "--as", "--tail", "-c", "--container"].includes(
         head[index - 1] ?? "",
       ),
   );
@@ -2655,6 +2759,7 @@ function kubectl(raw: string): string {
   if (!verb) return kubectlUsage();
 
   if (verb === "auth") return kubectlAuth(head, flags);
+  if (verb === "logs" || verb === "log") return kubectlLogs(head, rawResource, flags);
 
   /* Accept kubectl's `<resource>/<name>` form, e.g. clusterrolebinding/foo. */
   const slashed = verb !== "exec" && rawResource?.includes("/");
@@ -3106,6 +3211,10 @@ function submit(value: string): string {
   const matched = stage.answers.some(
     (candidate) => candidate.toLowerCase() === answer,
   );
+
+  if (!matched && stage.nudges?.[answer]) {
+    return stage.nudges[answer];
+  }
 
   if (!matched) {
     /* A correct answer for a stage already passed is a useful nudge. */
