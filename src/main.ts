@@ -337,7 +337,7 @@ const stages: Stage[] = [
   {
     title: "K01 · Insecure workload configurations",
     objective: "Find the pod that allows privilege escalation.",
-    brief: ["Run `kubectl get pods -A`, then inspect pod security settings with `kubectl describe pod <name> -n <namespace>` or `kubectl get pod <name> -n <namespace> -o yaml`.", "Look for `allowPrivilegeEscalation: true` and submit that pod name."],
+    brief: ["Run `kubectl get pods -A`, then inspect pod security settings with `kubectl describe pod <name> -n <namespace>` or `kubectl get pod <name> -n <namespace> -o yaml`."],
     answers: ["recommendation-c", "customer-c/recommendation-c"],
     flag: "EDERA{K01_INSECURE_WORKLOAD}",
     reward: ["`allowPrivilegeEscalation: true` permits a process to gain privileges beyond its parent, including through setuid programs.", "Set `allowPrivilegeEscalation: false` and apply a consistent workload security baseline."],
@@ -574,6 +574,10 @@ const helpSections: HelpSection[] = [
       {
         command: "kubectl describe pod <name> -n <namespace>",
         description: "Inspect detailed pod state and runtime information.",
+      },
+      {
+        command: "kubectl describe pods [-A]",
+        description: "Describe every pod in the current namespace, or across all namespaces.",
       },
       {
         command: "kubectl get namespaces",
@@ -1134,6 +1138,7 @@ function kubectlUsage(): string {
     "  kubectl get pods [-A] [-o wide] [--show-labels] [-l app=<name>]",
     "  kubectl get pod <name> -n <namespace> -o yaml",
     "  kubectl describe pod <name> -n <namespace>",
+    "  kubectl describe pods [-A] [-l app=<name>]",
     "  kubectl get nodes [-o wide] [--show-labels]",
     "  kubectl describe node worker-02",
     "  kubectl get namespaces",
@@ -1189,12 +1194,26 @@ function resolvePod(name: string, flags: KubectlFlags): Pod | undefined {
 }
 
 function describePod(name: string | undefined, flags: KubectlFlags): string {
-  if (!name) return "error: resource name may not be empty";
+  // Like real kubectl, `describe pods` with no name describes every pod in
+  // scope (current namespace, or all namespaces with -A), honouring -l.
+  if (!name) {
+    const visible = scopedPods(flags);
+    if (visible.length === 0) {
+      return flags.allNamespaces
+        ? "No resources found."
+        : `No resources found in ${flags.namespace} namespace.`;
+    }
+    return visible.map((pod) => describePodDetails(pod)).join("\n\n\n");
+  }
 
   const pod = resolvePod(name, flags);
 
   if (!pod) return notFound("pods", name);
 
+  return describePodDetails(pod);
+}
+
+function describePodDetails(pod: Pod): string {
   state.inspected.add(pod.name);
   if (securityProfileFor(pod).allowPrivilegeEscalation) {
     state.escalationDescribed.add(pod.name);
