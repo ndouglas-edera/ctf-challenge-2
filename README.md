@@ -109,6 +109,13 @@ submit report-bot
 The challenge source confirms both the file contents and expected answer.
 
 ### K03: Secrets Management Failures
+- This commands shows the app dumping its environment at startup.
+- Its redaction catches ```BILLING_DB_PASSWORD=********``` but misses ```BILLING_TOKEN```. Seeing one value masked and the next one not is the real-world bug, and the clue.
+- The other pods also log their config, but properly redacted (```[REDACTED]```, ```***e0f1```). Players have to check logs across workloads instead of stopping at the first suspicious line.
+```
+kubectl logs billing-api-b -n customer-b
+```
+
 Again, follow the objective:
 ```
 cat ~/manifests/billing-api.yaml
