@@ -188,6 +188,16 @@ protect image remove sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3a
 <br/><br/>
 
 ### K08: Cluster-To-Cloud Lateral Movement
+- ```eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/AnalyticsExportRole``` on ```customer-d/analytics-batch```.
+- ```kubectl get sa -A -o yaml``` or ```kubectl describe sa analytics-batch -n customer-d``` works!
+- ```kubectl get pod analytics-batch-d -n customer-d -o yaml``` or ```describe pod``` shows ```serviceAccountName: analytics-batch```.
+- It also shows the ```AWS_ROLE_ARN``` and ```AWS_WEB_IDENTITY_TOKEN_FILE``` env vars, which AWS’s pod identity webhook injects.
+- That’s what lets the pod exchange its token for cloud credentials.
+- ```kubectl logs analytics-batch-d -n customer-d``` shows it picking up credentials for that role and uploading to S3.
+
+```
+submit customer-d/analytics-batch
+```
 <br/><br/>
 
 
