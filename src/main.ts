@@ -3706,6 +3706,17 @@ function submit(value: string): string {
     return stage.nudges[answer];
   }
 
+  /*
+   * K04 is about making the policy admit the workload, so naming the label
+   * is not enough: the Pod must actually have been admitted.
+   */
+  if (matched && stage.flag === K04_FLAG && !paymentsPod()) {
+    return [
+      "Not yet. payments-worker in customer-e is still 0/1.",
+      "Knowing the label isn't enough: apply it to the namespace with kubectl label.",
+    ].join("\n");
+  }
+
   if (!matched) {
     /* A correct answer for a stage already passed is a useful nudge. */
     const earlier = stages
