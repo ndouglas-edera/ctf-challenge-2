@@ -440,11 +440,16 @@ const stages: Stage[] = [
   },
   {
     title: "K08 · Cluster-to-cloud lateral movement",
-    objective: "Identify the workload with unnecessarily available cloud identity.",
-    brief: ["Inspect ~/manifests/cloud-identity.yaml and ~/evidence/cloud-review.txt.", "Submit the workload name."],
-    answers: ["invoice-exporter"],
+    objective: "Find the ServiceAccount annotated to request permissions from an AWS IAM role.",
+    brief: ["Read up on cluster-to-cloud lateral movement: https://kubernetes-top10.owasp.org/2025/en/src/K08-Cluster-To-Cloud-Lateral-Movement.html", "Submit the ServiceAccount name."],
+    answers: ["analytics-batch", "customer-d/analytics-batch", "system:serviceaccount:customer-d:analytics-batch"],
+    nudges: {
+      "analytics-batch-d": "That's the pod. Submit the ServiceAccount it runs as.",
+      "analyticsexportrole": "That's the IAM role. Which ServiceAccount requests it?",
+      "arn:aws:iam::123456789012:role/analyticsexportrole": "That's the IAM role. Which ServiceAccount requests it?",
+    },
     flag: "EDERA{K08_CLOUD_LATERAL_MOVEMENT}",
-    reward: ["Compromising a workload should not grant broad cloud access.", "Use scoped workload identity and restrict metadata access."],
+    reward: ["analytics-batch can trade its projected token for AnalyticsExportRole's AWS credentials.", "Compromise that pod and an attacker is in the cloud account, not just the cluster.", "Scope IAM roles per workload, avoid static keys, and block pod access to instance metadata."],
   },
   {
     title: "K09 · Broken authentication mechanisms",
@@ -1386,31 +1391,35 @@ function describePodDetails(pod: Pod): string {
     state.escalationDescribed.add(pod.name);
   }
 
+  /* Real `kubectl describe pod` aligns its header to an 18-column label. */
+  const field = (label: string, value: string) => `${`${label}:`.padEnd(18)}${value}`;
+  const continuation = " ".repeat(18);
+
   const annotationLines = Object.entries(pod.annotations).map(
     ([key, value], index) =>
-      index === 0
-        ? `Annotations:   ${key}: ${value}`
-        : `               ${key}: ${value}`,
+      index === 0 ? field("Annotations", `${key}: ${value}`) : `${continuation}${key}: ${value}`,
   );
 
   const labelLines = Object.entries(labelsFor(pod)).map(([key, value], index) =>
-    index === 0
-      ? `Labels:        ${key}=${value}`
-      : `               ${key}=${value}`,
+    index === 0 ? field("Labels", `${key}=${value}`) : `${continuation}${key}=${value}`,
   );
 
   return [
-    `Name:          ${pod.name}`,
-    `Namespace:     ${pod.namespace}`,
-    `Node:          ${pod.node}`,
-    `Status:        ${pod.status}`,
+    field("Name", pod.name),
+    field("Namespace", pod.namespace),
+    field("Service Account", serviceAccountFor(pod)?.name ?? "default"),
+    field("Node", pod.node),
+    field("Status", pod.status),
     ...labelLines,
     ...annotationLines,
-    `runtimeClassName:  ${pod.runtimeClass ?? "<none>"}`,
+    field("runtimeClassName", pod.runtimeClass ?? "<none>"),
     "",
     "Containers:",
     `  ${pod.app}:`,
     `    Image:       ${pod.image}`,
+    ...(Object.keys(awsIdentityEnv(pod)).length
+      ? ["    Environment:", ...Object.entries(awsIdentityEnv(pod)).map(([key, value]) => `      ${key}:  ${value}`)]
+      : ["    Environment: <none>"]),
     `    Privileged:  ${pod.privileged}`,
     `    AllowPrivilegeEscalation: ${securityProfileFor(pod).allowPrivilegeEscalation}`,
     `    RunAsNonRoot: ${securityProfileFor(pod).runAsNonRoot}`,
@@ -1422,6 +1431,25 @@ function describePodDetails(pod: Pod): string {
       ? "  Normal  Started  container started"
       : "  Warning  FailedCreatePodSandbox  zone did not become ready",
   ].join("\n");
+}
+
+/* The ServiceAccount a pod runs as: one named after its app, else default. */
+function serviceAccountFor(pod: Pod): ServiceAccountObject | undefined {
+  return (
+    serviceAccounts.find((account) => account.namespace === pod.namespace && account.name === pod.app) ??
+    serviceAccounts.find((account) => account.namespace === pod.namespace && account.name === "default")
+  );
+}
+
+/* What the AWS pod identity webhook injects for an IRSA-annotated account. */
+function awsIdentityEnv(pod: Pod): Record<string, string> {
+  const roleArn = serviceAccountFor(pod)?.annotations?.["eks.amazonaws.com/role-arn"];
+  if (!roleArn) return {};
+  return {
+    AWS_ROLE_ARN: roleArn,
+    AWS_WEB_IDENTITY_TOKEN_FILE: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+    AWS_STS_REGIONAL_ENDPOINTS: "regional",
+  };
 }
 
 function getPodYaml(name: string | undefined, flags: KubectlFlags): string {
@@ -1449,10 +1477,20 @@ function getPodYaml(name: string | undefined, flags: KubectlFlags): string {
     ),
     "spec:",
     ...(pod.runtimeClass ? [`  runtimeClassName: ${pod.runtimeClass}`] : []),
+    `  serviceAccountName: ${serviceAccountFor(pod)?.name ?? "default"}`,
     `  automountServiceAccountToken: ${securityProfileFor(pod).automountServiceAccountToken}`,
     "  containers:",
     `  - name: ${pod.app}`,
     `    image: ${pod.image}`,
+    ...(Object.keys(awsIdentityEnv(pod)).length
+      ? [
+          "    env:",
+          ...Object.entries(awsIdentityEnv(pod)).flatMap(([key, value]) => [
+            `    - name: ${key}`,
+            `      value: ${value}`,
+          ]),
+        ]
+      : []),
     "    securityContext:",
     `      privileged: ${pod.privileged}`,
     ...Object.entries(securityProfileFor(pod)).filter(([key]) => key !== "automountServiceAccountToken").map(([key, value]) =>
@@ -2135,7 +2173,12 @@ const serviceAccounts: ServiceAccountObject[] = [
     annotations: { "owner": "reporting-integration" },
   },
   { name: "recommendation", namespace: "customer-c", age: "35d" },
-  { name: "analytics-batch", namespace: "customer-d", age: "27d" },
+  {
+    name: "analytics-batch",
+    namespace: "customer-d",
+    age: "27d",
+    annotations: { "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/AnalyticsExportRole" },
+  },
   { name: "edera-node-agent", namespace: "platform", age: "41d" },
 ];
 
@@ -2808,11 +2851,13 @@ const podLogs: Record<string, string[]> = {
   ],
   "analytics-batch-d": [
     "2026-11-08T08:10:00.012Z INFO  analytics-batch 0.9.0 job=nightly-rollup",
+    "2026-11-08T08:10:00.014Z INFO  aws: credentials from web identity token (role arn:aws:iam::123456789012:role/AnalyticsExportRole)",
     "2026-11-08T08:10:00.015Z INFO  db: host=analytics-db.customer-d.svc user=analytics password=[REDACTED]",
     "2026-11-08T08:10:03.448Z INFO  rolled up 1,284,113 events into 96 hourly buckets",
     "2026-11-08T08:10:04.102Z ERROR failed to write bucket 2026-11-07T23:00: connection reset by peer",
     "2026-11-08T08:10:05.390Z INFO  retry succeeded for bucket 2026-11-07T23:00",
-    "2026-11-08T08:10:05.391Z INFO  job complete in 5.4s",
+    "2026-11-08T08:10:05.391Z INFO  uploaded rollup to s3://acme-analytics-exports/2026/11/07/rollup.parquet",
+    "2026-11-08T08:10:05.392Z INFO  job complete in 5.4s",
     "2026-11-08T08:17:05.262Z INFO  enriching rollup with invoice totals from billing-api.customer-b.svc:8080",
     "2026-11-08T08:17:05.290Z INFO  fetched 412 open invoices from billing-api.customer-b.svc:8080",
     "2026-11-08T08:17:10.118Z WARN  GET http://recommendation.customer-c.svc:8080/v1/stats timed out after 5s",
