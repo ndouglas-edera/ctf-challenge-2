@@ -115,6 +115,9 @@ The challenge source confirms both the file contents and expected answer.
 ```
 kubectl logs billing-api-b -n customer-b
 ```
+```
+submit bt-lab-7f3a9c2e5d1b
+```
 
 Again, follow the objective:
 ```
