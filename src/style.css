@@ -1020,7 +1020,8 @@ a {
   font: 700 9px / 1.2 var(--font-mono);
 }
 
-.tenant-card span:last-child {
+.tenant-card span:last-child,
+.tenant-card .tenant-caption {
   margin-top: 3px;
 
   color: var(--edera-muted);
@@ -1058,7 +1059,8 @@ a {
   color: #8f3838;
 }
 
-.tenant-card.layer-host span:last-child {
+.tenant-card.layer-host span:last-child,
+.tenant-card.layer-host .tenant-caption {
   color: #b94444;
 }
 
@@ -1531,6 +1533,10 @@ a {
     width: 100%;
   }
 
+  .api-box {
+    width: 100%;
+  }
+
   .terminal-panel {
     height: 580px;
     min-height: 580px;
@@ -1643,7 +1649,7 @@ a {
 }
 
 .cli-help-command-link::after {
-  content: " ↗";
+  content: " â†—";
   color: var(--edera-cyan);
   font-weight: 700;
 }
@@ -1817,4 +1823,82 @@ a {
   color: var(--edera-lime);
   font-family: var(--font-mono);
   font-weight: 700;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Secrets and RBAC (K02)                                                     */
+/* -------------------------------------------------------------------------- */
+
+.secret-chips {
+  grid-column: 2;
+
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+
+  margin-top: 7px;
+}
+
+/* Specific enough to beat `.tenant-card span:last-child`. */
+.tenant-card .secret-chips .secret-chip {
+  margin-top: 0;
+  padding: 3px 6px;
+
+  border: 1px solid rgba(0, 90, 87, 0.2);
+  border-radius: 999px;
+
+  background: rgba(0, 90, 87, 0.05);
+  color: var(--edera-teal);
+
+  font: 700 7px / 1.2 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.tenant-card .secret-chips .secret-exposed {
+  border-color: rgba(185, 68, 68, 0.28);
+  background: rgba(255, 115, 115, 0.1);
+  color: #b94444;
+}
+
+.tenant-card .secret-chips .secret-admin {
+  border-color: #b94444;
+  background: #b94444;
+  color: #fff;
+}
+
+.api-box {
+  width: min(620px, 70%);
+  margin: 0 auto;
+  padding: 12px 14px;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+
+  border: 1px solid rgba(255, 115, 115, 0.35);
+  border-radius: 13px;
+
+  background: rgba(255, 115, 115, 0.08);
+  text-align: center;
+}
+
+.api-box strong {
+  color: #b94444;
+  font: 700 10px / 1 var(--font-mono);
+  letter-spacing: 0.1em;
+}
+
+.api-box span {
+  color: #8b6767;
+  font: 8px / 1.5 var(--font-mono);
+}
+
+.api-box code {
+  color: #8f3838;
+  font-weight: 700;
+}
+
+.api-connector {
+  background: rgba(255, 115, 115, 0.35);
 }
