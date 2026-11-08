@@ -172,6 +172,13 @@ submit v1.30.2
 <br/><br/>
 
 ### K07: Misconfigured And Vulnerable Cluster Components
+- ```protect image list``` shows the cache, which now includes ```docker.io/library/php:7.4.33-apache```.
+- That’s the final 7.4 release, and PHP 7.4 has had no security fixes since November 2022. A current ```php:8.4-fpm-alpine``` sits next to it as a red herring.
+- Following the docs, the player copies the digest and runs ```protect image remove sha256:a766a0…```. The flag is captured on the spot.
+- The reward makes the Edera point: a zone limits the blast radius of a vulnerable app, but it doesn’t patch PHP.
+- ```protect image remove php:7.4.33-apache``` returns an error explaining that images are removed by digest.
+- Removing a zone kernel or a running workload’s image is refused with “**in use by zone …**”, so players can’t break the lab.
+- ```protect image pull <ref>``` lets a player put back anything they removed by accident.
 <br/><br/>
 
 ### K08: Cluster-To-Cloud Lateral Movement
