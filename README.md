@@ -142,7 +142,10 @@ submit bt-lab-7f3a9c2e5d1b
 - ```analytics-batch``` and ```recommendation``` successfully call ```billing-api``` across namespaces, but their calls into other tenants time out.
 - ```billing-api```’s own logs show requests from ```remote=10.244.1.24``` and ```.25```, which players can match to those pods with ```kubectl get pods -A -o wide```.
 - The pod IPs are fixed per pod so those log lines always match.
-- The policy name, ```billing-api-ingress``` is the correct answer.
+```
+submit billing-api-ingress
+```
+
 <br/><br/>
 
 ### K06: Overly-Exposed Kubernetes Components
