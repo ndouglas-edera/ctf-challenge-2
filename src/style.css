@@ -1902,3 +1902,24 @@ a {
 .api-connector {
   background: rgba(255, 115, 115, 0.35);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Blocked tenant (K04)                                                       */
+/* -------------------------------------------------------------------------- */
+
+.tenant-card.tenant-blocked {
+  border: 1px dashed rgba(185, 68, 68, 0.45);
+  background: rgba(255, 115, 115, 0.05);
+}
+
+.tenant-card.tenant-blocked .tenant-dot {
+  background: #b94444;
+}
+
+.tenant-card.tenant-blocked strong {
+  color: #8f3838;
+}
+
+.tenant-card.tenant-blocked .tenant-caption {
+  color: #b94444;
+}
