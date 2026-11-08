@@ -306,6 +306,20 @@ const images: CachedImage[] = [
     size: "78.1MB",
   },
   {
+    reference: "docker.io/library/php:8.4-fpm-alpine",
+    digest:
+      "sha256:611a4485c8fbe49e9d8b11bb13375b46be6bca14902cb0b37e172eab9a97c021",
+    format: "squashfs",
+    size: "31.6MB",
+  },
+  {
+    reference: "docker.io/library/php:7.4.33-apache",
+    digest:
+      "sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3aba831fc7b44b",
+    format: "squashfs",
+    size: "163.9MB",
+  },
+  {
     reference: "ghcr.io/acme/image-processor:1.4.2",
     digest:
       "sha256:5a0c9f231e6b74d8ac35180fe9b2d764c1a83e05fd7b26943ce81b0a75f3d2e8",
@@ -352,6 +366,7 @@ interface Stage {
 }
 
 const K04_FLAG = "EDERA{K04_POLICY_ENFORCED}";
+const K07_FLAG = "EDERA{K07_VULNERABLE_COMPONENT}";
 
 const stages: Stage[] = [
   {
@@ -417,11 +432,11 @@ const stages: Stage[] = [
   },
   {
     title: "K07 · Misconfigured and vulnerable components",
-    objective: "Identify the workload using an unpinned image tag.",
-    brief: ["Inspect ~/manifests/vulnerable-component.yaml and the image inventory.", "Submit the affected workload name."],
-    answers: ["legacy-metrics"],
+    objective: "An end-of-life PHP image with known CVEs is sitting in the node's Edera image cache. Find it and remove it.",
+    brief: ["Read up on managing images with the protect CLI: https://docs.edera.dev/guides/cli-user-guide/#removing-images", "The flag is captured automatically once the image is removed."],
+    answers: ["sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3aba831fc7b44b"],
     flag: "EDERA{K07_VULNERABLE_COMPONENT}",
-    reward: ["Scan images, use supported versions, and pin trusted artifacts.", "A mutable tag alone is not proof of a CVE."],
+    reward: ["PHP 7.4 has had no security fixes since November 2022, so later CVEs stay unpatched.", "A zone limits the blast radius of a vulnerable app, but it doesn't patch PHP.", "Prune images you don't run, and keep base images on supported releases."],
   },
   {
     title: "K08 · Cluster-to-cloud lateral movement",
@@ -728,6 +743,14 @@ const helpSections: HelpSection[] = [
       {
         command: "protect image list [--output table]",
         description: "List available Edera images.",
+      },
+      {
+        command: "protect image remove <digest>",
+        description: "Remove an image from the node's Edera image cache.",
+      },
+      {
+        command: "protect image pull <reference>",
+        description: "Pull an image into the Edera image cache.",
       },
       {
         command: "protect image list-kernel-variants",
@@ -3719,6 +3742,8 @@ function protectUsage(): string {
     "  protect zone logs <name> [--follow]",
     "  protect image list [--output table]",
     "  protect image list-kernel-variants",
+    "  protect image remove <digest>",
+    "  protect image pull <reference>",
     "  protect workload list [--selector status.state=running]",
     "  protect workload launch --zone <zone> --name <name> <image>",
     "  protect workload exec <name> <command>",
@@ -3954,6 +3979,65 @@ function imageList(input: string): string {
   );
 }
 
+const VULNERABLE_IMAGE_DIGEST = "sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3aba831fc7b44b";
+
+function vulnerableImageRemoved(): boolean {
+  return !images.some((image) => image.digest === VULNERABLE_IMAGE_DIGEST);
+}
+
+/* Images backing a running zone (kernels) or workload can't be removed. */
+function imageInUse(image: CachedImage): string | null {
+  const zone = zones.find((candidate) => candidate.kernel === image.reference);
+  if (zone) return `zone ${zone.name}`;
+  const pod = pods.find((candidate) => candidate.image === image.reference && candidate.zone);
+  if (pod) return `workload ${pod.name}`;
+  return null;
+}
+
+function imageRemove(digest: string | undefined): string {
+  if (!digest) return "error: missing image digest\n\nusage: protect image remove <digest>";
+
+  const image = images.find((candidate) => candidate.digest === digest);
+  if (!image) {
+    const byReference = images.find((candidate) => candidate.reference === digest);
+    return byReference
+      ? `error: image not found: ${digest}\nImages are removed by digest. Run 'protect image list' to find it.`
+      : `error: image not found: ${digest}`;
+  }
+
+  const usedBy = imageInUse(image);
+  if (usedBy) return `error: image ${image.digest} is in use by ${usedBy}`;
+
+  images.splice(images.indexOf(image), 1);
+  const output = [`removed image ${image.digest} (${image.reference})`];
+
+  if (image.digest === VULNERABLE_IMAGE_DIGEST && currentStage()?.flag === K07_FLAG) {
+    output.push("", captureCurrentStage());
+  }
+
+  return output.join("\n");
+}
+
+function imagePull(reference: string | undefined, input: string): string {
+  if (!reference) return "error: missing image reference\n\nusage: protect image pull <reference>";
+
+  const existing = images.find((image) => image.reference === reference);
+  if (existing && !input.includes("--overwrite-cache")) {
+    return `image ${reference} is already cached (${existing.digest})`;
+  }
+
+  /* Deterministic fake digest so repeated pulls are stable. */
+  let hash = 0x811c9dc5;
+  for (const char of reference) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
+  const digest = `sha256:${Array.from({ length: 8 }, (_, index) =>
+    ((hash ^ Math.imul(index + 1, 0x9e3779b1)) >>> 0).toString(16).padStart(8, "0"),
+  ).join("")}`;
+
+  if (existing) images.splice(images.indexOf(existing), 1);
+  images.push({ reference, digest, format: "squashfs", size: "64.0MB" });
+  return [`pulled ${reference}`, `digest: ${digest}`].join("\n");
+}
+
 function listKernelVariants(): string {
   return [
     table(
@@ -4072,6 +4156,10 @@ function protectCli(input: string): string {
 
   if (command === "image") {
     if (subcommand === "list") return imageList(input);
+    if (subcommand === "remove") return imageRemove(name);
+    if (subcommand === "pull") {
+      return imagePull(args.slice(2).find((arg) => !arg.startsWith("-")), input);
+    }
     if (subcommand === "list-kernel-variants") {
       return listKernelVariants();
     }
@@ -4124,6 +4212,10 @@ function submit(value: string): string {
    * K04 is about making the policy admit the workload, so naming the label
    * is not enough: the Pod must actually have been admitted.
    */
+  if (matched && stage.flag === K07_FLAG && !vulnerableImageRemoved()) {
+    return "Not yet. That image is still in the cache. Remove it with protect image remove.";
+  }
+
   if (matched && stage.flag === K04_FLAG && !paymentsPod()) {
     return [
       "Not yet. payments-worker in customer-e is still 0/1.",
@@ -4171,6 +4263,7 @@ function captureCurrentStage(): string {
   /* K04 is captured by labelling; if that already happened, say so. */
   const k04Ready =
     next?.flag === K04_FLAG && isOnboarded(BLOCKED_NAMESPACE) && Boolean(paymentsPod());
+  const k07Ready = next?.flag === K07_FLAG && vulnerableImageRemoved();
 
   return [
     "FLAG CAPTURED",
@@ -4183,7 +4276,9 @@ function captureCurrentStage(): string {
       ? `Objective ${String(state.stage + 1).padStart(2, "0")}: ${next.objective}${
           k04Ready
             ? "\n  You've already admitted that workload. Submit the label you applied to capture this flag."
-            : ""
+            : k07Ready
+              ? "\n  You've already removed that image. Submit its digest to capture this flag."
+              : ""
         }`
       : [
           "CTF COMPLETE",
