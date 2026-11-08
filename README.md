@@ -150,6 +150,18 @@ submit billing-api-ingress
 <br/><br/>
 
 ### K06: Overly-Exposed Kubernetes Components
+Find the API server: 
+```
+kubectl cluster-info
+```
+
+- ```cat ~/.kube/config```, ```.profile``` and ```env``` already pointed to the answer.
+- Ask it without credentials: ```curl https://10.10.0.10:6443/version``` first fails on TLS, as real ```curl``` would, which teaches the ```-k``` flag.
+- Any other path returns ```403 system:anonymous```, so it’s clear that only version and health information leak. This matches a default cluster’s ```system:public-info-viewer``` binding.
+- From inside a tenant run ```kubectl exec billing-api-b -n customer-b -- curl -sk https://kubernetes.default.svc/version``` works as well.
+- In-cluster names only resolve from inside pods, as in a real cluster, which shows that every tenant can reach the API.
+- ```kubectl version``` and ```kubectl get --raw /version``` also print the server version, because that’s what real ```kubectl``` does.
+- A player can get the answer using their own credentials without ever making the anonymous request.
 <br/><br/>
 
 ### K07: Misconfigured And Vulnerable Cluster Components
