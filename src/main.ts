@@ -423,6 +423,8 @@ interface GameState {
   /* Pods the player has read in detail, used to reveal the diagram. */
   inspected: Set<string>;
   escalationDescribed: Set<string>;
+  /* Secrets the player has listed or described ("namespace/name"). */
+  secretsSeen: Set<string>;
   zonesListed: boolean;
   cwd: string;
   namespace: string;
@@ -434,6 +436,7 @@ const state: GameState = {
   commandCount: 0,
   inspected: new Set<string>(),
   escalationDescribed: new Set<string>(),
+  secretsSeen: new Set<string>(),
   zonesListed: false,
   cwd: "/home/ivy",
   namespace: "default",
@@ -2231,6 +2234,8 @@ function getSecrets(name: string | undefined, flags: KubectlFlags): string {
   if (name && visible.length === 0) return notFound("secrets", name);
   if (visible.length === 0) return noneFound(flags, true);
 
+  visible.forEach((secret) => state.secretsSeen.add(`${secret.namespace}/${secret.name}`));
+
   if (flags.yaml) return yamlDocument(visible.map(secretManifest), Boolean(name));
 
   return withNamespaceColumn(
@@ -2242,6 +2247,7 @@ function getSecrets(name: string | undefined, flags: KubectlFlags): string {
 }
 
 function describeSecret(secret: SecretObject): string {
+  state.secretsSeen.add(`${secret.namespace}/${secret.name}`);
   const keyWidth = Math.max(...Object.keys(secret.data).map((key) => key.length)) + 2;
   return [
     `Name:         ${secret.name}`,
@@ -3325,6 +3331,49 @@ function renderArchitecture(): string {
   );
   const found = exposed.length > 0;
 
+  /*
+   * K02: once the cluster-admin binding has been captured, every Secret is
+   * shown as reachable, because that token can read them all through the
+   * API regardless of which zone a workload runs in. Before that, only the
+   * Secrets the player has listed appear, as neutral chips.
+   */
+  const adminBinding = clusterRoleBindings.find((binding) => binding.name === "report-bot-admin");
+  const adminSubject = adminBinding?.subjects.find((subject) => subject.kind === "ServiceAccount");
+  const rbacFound = state.captured.includes("EDERA{K02_EXCESSIVE_PERMISSIONS}") && Boolean(adminSubject);
+  const adminToken = secrets.find(
+    (secret) => secret.annotations?.["kubernetes.io/service-account.name"] === adminSubject?.name &&
+      secret.namespace === adminSubject?.namespace,
+  );
+  const shownSecrets = secrets.filter(
+    (secret) => rbacFound || state.secretsSeen.has(`${secret.namespace}/${secret.name}`),
+  );
+  const secretNamespaces = new Set(shownSecrets.map((secret) => secret.namespace));
+
+  const secretChips = (namespace: string): string => {
+    const chips = shownSecrets
+      .filter((secret) => secret.namespace === namespace)
+      .map((secret) => {
+        const isAdminToken = rbacFound && secret === adminToken;
+        const classes = ["secret-chip", rbacFound ? "secret-exposed" : "", isAdminToken ? "secret-admin" : ""].join(" ");
+        const title = isAdminToken
+          ? "cluster-admin token"
+          : rbacFound
+            ? `readable by ${adminSubject?.namespace}/${adminSubject?.name}`
+            : secret.type;
+        return `<span class="${classes}" title="${escapeHtml(title)}">${isAdminToken ? "admin token · " : ""}${escapeHtml(secret.name)}</span>`;
+      })
+      .join("");
+    return chips ? `<div class="secret-chips">${chips}</div>` : "";
+  };
+
+  /* Secrets attach to the first card of their namespace only. */
+  const namespacesWithCards = new Set<string>();
+  const chipsOnce = (namespace: string): string => {
+    if (namespacesWithCards.has(namespace)) return "";
+    namespacesWithCards.add(namespace);
+    return secretChips(namespace);
+  };
+
   const cards = pods
     .map((pod) => {
       const layer = podLayer(pod);
@@ -3338,24 +3387,43 @@ function renderArchitecture(): string {
             ? `${zone?.name} · ${zone?.state}`
             : "no zone · host kernel";
 
-      return `<div class="tenant-card layer-${layer} ${flagged ? "tenant-escalation" : ""}"><span class="tenant-dot"></span><strong>${pod.namespace}/${pod.app}</strong><span>${caption}</span></div>`;
+      return `<div class="tenant-card layer-${layer} ${flagged ? "tenant-escalation" : ""}"><span class="tenant-dot"></span><strong>${pod.namespace}/${pod.app}</strong><span class="tenant-caption">${caption}</span>${chipsOnce(pod.namespace)}</div>`;
     })
     .join("");
 
+  /* Namespaces holding Secrets but no running pods still get a card. */
+  const orphanCards = [...secretNamespaces]
+    .filter((namespace) => !pods.some((pod) => pod.namespace === namespace))
+    .map((namespace) => `<div class="tenant-card layer-unknown"><span class="tenant-dot"></span><strong>${namespace}</strong><span class="tenant-caption">no running workloads</span>${chipsOnce(namespace)}</div>`)
+    .join("");
+
+  const exposedNamespaces = new Set(secrets.map((secret) => secret.namespace)).size;
+
+  const apiBox = rbacFound && adminBinding && adminSubject
+    ? `
+      <div class="api-box">
+        <strong>KUBERNETES API · RBAC</strong>
+        <span><code>${adminSubject.namespace}/${adminSubject.name}</code> → <code>${adminBinding.roleRef.kind}/${adminBinding.roleRef.name}</code> · reads every Secret in every namespace</span>
+      </div>
+      <div class="kernel-connector api-connector"></div>`
+    : "";
+
   return `
-    <section class="architecture ${found ? "architecture-compromised" : ""}">
+    <section class="architecture ${found || rbacFound ? "architecture-compromised" : ""}">
       <div class="section-heading">
         <div>
           <span class="eyebrow">CURRENT ARCHITECTURE</span>
           <h2>Edera-isolated workloads</h2>
         </div>
-        <span class="status-pill ${found ? "status-danger" : "status-unknown"}">
-          ${found ? "PRIVILEGE ESCALATION ENABLED" : `${pods.length} RUNNING WORKLOAD${pods.length === 1 ? "" : "S"}`}
+        <span class="status-pill ${found || rbacFound ? "status-danger" : "status-unknown"}">
+          ${rbacFound ? "CLUSTER-ADMIN TOKEN EXPOSED" : found ? "PRIVILEGE ESCALATION ENABLED" : `${pods.length} RUNNING WORKLOAD${pods.length === 1 ? "" : "S"}`}
         </span>
       </div>
 
-      ${pods.length > 0
-        ? `<div class="tenant-grid">${cards}</div>`
+      ${apiBox}
+
+      ${pods.length > 0 || orphanCards
+        ? `<div class="tenant-grid">${cards}${orphanCards}</div>`
         : `<div class="architecture-empty"><strong>NO WORKLOADS SCHEDULED</strong><span>Apply a manifest from <code>~/manifests</code> to restore a workload.</span></div>`}
 
       <div class="kernel-connector"></div>
@@ -3363,6 +3431,15 @@ function renderArchitecture(): string {
         <strong>HOST KERNEL</strong>
         <span>${NODE.kernelVersion} · ${NODE.name}</span>
       </div>
+
+      ${rbacFound && adminSubject ? `
+        <div class="blast-radius">
+          <span class="blast-icon">!</span>
+          <div>
+            <strong>${adminSubject.namespace}/${adminSubject.name} is bound to cluster-admin</strong>
+            <span>Its long-lived token can read all ${secrets.length} Secrets in ${exposedNamespaces} namespaces. Zones isolate kernels, not API access, so scope service accounts to the namespaces and verbs they need.</span>
+          </div>
+        </div>` : ""}
 
       ${found ? `
         <div class="blast-radius">
