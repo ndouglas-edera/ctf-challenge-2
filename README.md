@@ -231,7 +231,10 @@ submit cluster-status-public
 - ```recommendation-c``` is the pod from K01 that allowed privilege escalation, and here it was used to get root through ```su```.
 
 ```
-submit recommendation-c
+kubectl logs edera-ebpf-test -n platform
+```
+```
+kubectl kworkerd
 ```
 
 <br/><br/>
