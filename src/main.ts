@@ -378,7 +378,7 @@ const stages: Stage[] = [
     reward: ["`allowPrivilegeEscalation: true` permits a process to gain privileges beyond its parent, including through setuid programs.", "Set `allowPrivilegeEscalation: false` and apply a consistent workload security baseline."],
   },
   {
-    title: "K02 · Overly permissive authorisation",
+    title: "K02 · Overly-permissive authorisation",
     objective: "Find the service account bound to excessive permissions.",
     brief: ["Read up on RBAC good practices: https://kubernetes.io/docs/concepts/security/rbac-good-practices/", "Submit the affected service account."],
     answers: ["report-bot", "customer-b/report-bot", "system:serviceaccount:customer-b:report-bot"],
@@ -395,7 +395,7 @@ const stages: Stage[] = [
     reward: ["Anyone with `get` on `pods/log`, or access to your log platform, could read that token.", "Never log configuration or environment values; rotate the credential and restrict `pods/log` access."],
   },
   {
-    title: "K04 · Lack of cluster-level policy enforcement",
+    title: "K04 · Lack of cluster-level policies",
     objective: "A tenant's workload is being blocked from starting. Find out why and get it running.",
     brief: ["Read up on Kyverno validate rules: https://release-1-18-0.kyverno.io/docs/policy-types/cluster-policy/validate/", "The flag is captured automatically once the workload is admitted."],
     answers: ["edera.dev/isolation=enforced"],
