@@ -378,7 +378,7 @@ const stages: Stage[] = [
     reward: ["`allowPrivilegeEscalation: true` permits a process to gain privileges beyond its parent, including through setuid programs.", "Set `allowPrivilegeEscalation: false` and apply a consistent workload security baseline."],
   },
   {
-    title: "K02 · Overly permissive authorisation",
+    title: "K02 · Overly permissive authorization",
     objective: "Find the service account bound to excessive permissions.",
     brief: ["Read up on RBAC good practices: https://kubernetes.io/docs/concepts/security/rbac-good-practices/", "Submit the affected service account."],
     answers: ["report-bot", "customer-b/report-bot", "system:serviceaccount:customer-b:report-bot"],
@@ -395,7 +395,7 @@ const stages: Stage[] = [
     reward: ["Anyone with `get` on `pods/log`, or access to your log platform, could read that token.", "Never log configuration or environment values; rotate the credential and restrict `pods/log` access."],
   },
   {
-    title: "K04 · Lack of cluster-level policies",
+    title: "K04 · Lack of cluster-level policy enforcement",
     objective: "A tenant's workload is being blocked from starting. Find out why and get it running.",
     brief: ["Read up on Kyverno validate rules: https://release-1-18-0.kyverno.io/docs/policy-types/cluster-policy/validate/", "The flag is captured automatically once the workload is admitted."],
     answers: ["edera.dev/isolation=enforced"],
@@ -417,7 +417,7 @@ const stages: Stage[] = [
     reward: ["billing-api-ingress selected app=biling-api, which matches no pods.", "With nothing selected, billing-api accepted traffic from every namespace.", "A selector typo fails silently: pair a default-deny with allow rules, and test the flows."],
   },
   {
-    title: "K06 · Overly-exposed components",
+    title: "K06 · Overly exposed Kubernetes components",
     objective: "The API server tells anyone who asks, no credentials needed. What exact version does it leak?",
     brief: ["Read up on the Kubernetes API: https://kubernetes.io/docs/concepts/overview/kubernetes-api/", "Submit the exact version string."],
     answers: ["v1.30.2", "1.30.2"],
@@ -431,7 +431,7 @@ const stages: Stage[] = [
     reward: ["/version answered an anonymous request with the exact build: v1.30.2.", "That release is out of support, so an attacker can match it against known CVEs.", "Keep the API server off untrusted networks, and treat version data as reconnaissance."],
   },
   {
-    title: "K07 · Misconfigured components",
+    title: "K07 · Misconfigured and vulnerable components",
     objective: "An end-of-life PHP image with known CVEs is sitting in the node's Edera image cache. Find it and remove it.",
     brief: ["Read up on managing images with the protect CLI: https://docs.edera.dev/guides/cli-user-guide/#removing-images", "The flag is captured automatically once the image is removed."],
     answers: ["sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3aba831fc7b44b"],
@@ -453,11 +453,18 @@ const stages: Stage[] = [
   },
   {
     title: "K09 · Broken authentication mechanisms",
-    objective: "Identify the component with an authentication bypass configuration.",
-    brief: ["Inspect ~/manifests/authentication-audit.yaml and ~/evidence/auth-review.txt.", "Submit the affected component."],
-    answers: ["legacy-auth-proxy"],
+    objective: "Someone with no credentials at all can read more of this cluster than they should. Find the binding responsible.",
+    brief: ["Read up on broken authentication mechanisms: https://kubernetes-top10.owasp.org/2025/en/src/K09-Broken-Authentication-Mechanisms.html", "Submit the binding name."],
+    answers: ["cluster-status-public", "clusterrolebinding/cluster-status-public"],
+    nudges: {
+      "system:unauthenticated": "That's the group being granted access. Which binding grants it?",
+      "system:anonymous": "That's the identity anonymous requests get. Which binding gives it access?",
+      "cluster-status-reader": "That's the role. Which binding hands it to anonymous users?",
+      "--anonymous-auth=false": "That's the fix. Which binding is the problem?",
+      "anonymous-auth=false": "That's the fix. Which binding is the problem?",
+    },
     flag: "EDERA{K09_BROKEN_AUTHENTICATION}",
-    reward: ["Validate identity and tokens at each trust boundary.", "Remove bypass modes and validate issuer, audience, expiry, and signature."],
+    reward: ["cluster-status-public bound cluster-status-reader to system:unauthenticated.", "Anyone who could reach the API server could list every pod, node and namespace, with no credentials.", "Never grant RBAC to system:unauthenticated, and set --anonymous-auth=false where you can (test it first)."],
   },
   {
     title: "K10 · Inadequate logging and monitoring",
@@ -922,6 +929,7 @@ const directories = new Set<string>([
   "/var/lib/edera",
   "/var/lib/edera/protect",
   "/var/lib/edera/protect/images",
+  "/var/lib/kubelet",
 ]);
 
 function manifestFor(pod: Pod): string {
@@ -989,6 +997,23 @@ const virtualFiles: Record<string, string> = {
   ].join("\n"),
 
   "/var/lib/edera/protect/daemon.socket": "",
+
+  "/var/lib/kubelet/config.yaml": [
+    "apiVersion: kubelet.config.k8s.io/v1beta1",
+    "kind: KubeletConfiguration",
+    "authentication:",
+    "  anonymous:",
+    "    enabled: false",
+    "  webhook:",
+    "    enabled: true",
+    "  x509:",
+    "    clientCAFile: /etc/kubernetes/pki/ca.crt",
+    "authorization:",
+    "  mode: Webhook",
+    "readOnlyPort: 0",
+    "cgroupDriver: systemd",
+    "containerRuntimeEndpoint: unix:///run/containerd/containerd.sock",
+  ].join("\n"),
 
   "/home/ivy/.kube/config": [
     "apiVersion: v1",
@@ -1998,6 +2023,7 @@ interface Subject {
 interface BindingObject {
   name: string;
   namespace?: string;
+  annotations?: Record<string, string>;
   roleRef: { kind: "ClusterRole" | "Role"; name: string };
   subjects: Subject[];
   age: string;
@@ -2073,6 +2099,13 @@ const clusterRoles: RoleObject[] = [
       { apiGroups: ["node.k8s.io"], resources: ["runtimeclasses"], verbs: ["get", "list"] },
     ],
   },
+  {
+    name: "cluster-status-reader",
+    annotations: { "acme.io/owner": "platform-oncall" },
+    rules: [
+      { apiGroups: [""], resources: ["pods", "nodes", "namespaces"], verbs: ["get", "list", "watch"] },
+    ],
+  },
 ];
 
 const namespacedRoles: RoleObject[] = [
@@ -2125,6 +2158,13 @@ const clusterRoleBindings: BindingObject[] = [
     roleRef: { kind: "ClusterRole", name: "cluster-admin" },
     subjects: [{ kind: "ServiceAccount", name: "report-bot", namespace: "customer-b" }],
     age: "12d",
+  },
+  {
+    name: "cluster-status-public",
+    annotations: { "acme.io/ticket": "OPS-2291 temporary: external uptime checker, remove after migration" },
+    roleRef: { kind: "ClusterRole", name: "cluster-status-reader" },
+    subjects: [{ kind: "Group", name: "system:unauthenticated" }],
+    age: "19d",
   },
 ];
 
@@ -2339,7 +2379,7 @@ function bindingManifest(binding: BindingObject): object {
   return {
     apiVersion: "rbac.authorization.k8s.io/v1",
     kind: binding.namespace ? "RoleBinding" : "ClusterRoleBinding",
-    metadata: { name: binding.name, namespace: binding.namespace },
+    metadata: { annotations: binding.annotations, name: binding.name, namespace: binding.namespace },
     roleRef: {
       apiGroup: "rbac.authorization.k8s.io",
       kind: binding.roleRef.kind,
@@ -2522,7 +2562,7 @@ function describeBinding(binding: BindingObject): string {
     `Name:         ${binding.name}`,
     ...(binding.namespace ? [`Namespace:    ${binding.namespace}`] : []),
     "Labels:       <none>",
-    "Annotations:  <none>",
+    ...keyValueBlock("Annotations", binding.annotations, 14, ": "),
     "Role:",
     `  Kind:  ${binding.roleRef.kind}`,
     `  Name:  ${binding.roleRef.name}`,
@@ -2603,8 +2643,12 @@ interface Identity {
   groups: string[];
 }
 
-function identityFrom(as: string | null): Identity | null {
-  if (!as) return null;
+function identityFrom(as: string | null, asGroups: string[] = []): Identity | null {
+  if (!as && asGroups.length === 0) return null;
+  if (!as || as === "system:anonymous") {
+    return { user: as ?? "system:anonymous", groups: asGroups.length ? asGroups : ["system:unauthenticated"] };
+  }
+  if (asGroups.length) return { user: as, groups: asGroups };
   const match = /^system:serviceaccount:([^:]+):([^:]+)$/.exec(as);
   if (match) {
     return {
@@ -2668,13 +2712,16 @@ function kubectlAuth(tokens: string[], flags: KubectlFlags): string {
   const asToken = tokens.find((token) => token.startsWith("--as="));
   const asIndex = tokens.indexOf("--as");
   const as = asToken ? asToken.slice(5) : asIndex !== -1 ? tokens[asIndex + 1] ?? null : null;
-  const identity = identityFrom(as);
+  const asGroups = tokens.flatMap((token, index) =>
+    token.startsWith("--as-group=") ? [token.slice(11)] : token === "--as-group" && tokens[index + 1] ? [tokens[index + 1]] : [],
+  );
+  const identity = identityFrom(as, asGroups);
   const namespace = flags.allNamespaces ? null : flags.namespace;
 
   const words = tokens.filter(
     (token, index) =>
       !token.startsWith("-") &&
-      !["-n", "--namespace", "--as", "-o", "--output"].includes(tokens[index - 1] ?? ""),
+      !["-n", "--namespace", "--as", "--as-group", "-o", "--output"].includes(tokens[index - 1] ?? ""),
   );
 
   if (words[0] !== "auth" || words[1] !== "can-i") {
@@ -3556,7 +3603,7 @@ function apiResponse(path: string): { status: number; body: string } {
   }
   if (ANONYMOUS_PATHS.has(clean)) return { status: 200, body: "ok" };
 
-  return {
+  const forbidden = (message: string) => ({
     status: 403,
     body: JSON.stringify(
       {
@@ -3564,7 +3611,7 @@ function apiResponse(path: string): { status: number; body: string } {
         apiVersion: "v1",
         metadata: {},
         status: "Failure",
-        message: `forbidden: User "system:anonymous" cannot get path "${clean}"`,
+        message,
         reason: "Forbidden",
         details: {},
         code: 403,
@@ -3572,7 +3619,72 @@ function apiResponse(path: string): { status: number; body: string } {
       null,
       2,
     ),
-  };
+  });
+
+  /* Core API resource paths, checked against RBAC as system:anonymous. */
+  const match = /^\/api\/v1(?:\/namespaces\/([^/]+))?\/([a-z]+)(?:\/([^/]+))?$/.exec(clean);
+  if (!match) return forbidden(`forbidden: User "system:anonymous" cannot get path "${clean}"`);
+
+  const [, namespace, resource, name] = match;
+  const verb = name ? "get" : "list";
+  const anonymous = identityFrom("system:anonymous")!;
+  const allowed = rulesFor(anonymous, namespace ?? null).some((rule) => ruleAllows(rule, verb, resource, name));
+
+  if (!allowed) {
+    const scope = namespace ? `in the namespace "${namespace}"` : "at the cluster scope";
+    return forbidden(
+      `${resource}${name ? ` "${name}"` : ""} is forbidden: User "system:anonymous" cannot ${verb} resource "${resource}" in API group "" ${scope}`,
+    );
+  }
+
+  return { status: 200, body: JSON.stringify(anonymousList(resource, namespace, name), null, 2) };
+}
+
+/* What an anonymous caller gets back for the resources they can read. */
+function anonymousList(resource: string, namespace: string | undefined, name: string | undefined): object {
+  const listOf = (kind: string, items: object[]) =>
+    name ? items[0] ?? { kind: "Status", status: "Failure", reason: "NotFound", code: 404 } : {
+      kind: `${kind}List`,
+      apiVersion: "v1",
+      metadata: { resourceVersion: "482913" },
+      items,
+    };
+
+  if (resource === "pods") {
+    const visible = pods.filter(
+      (pod) => (!namespace || pod.namespace === namespace) && (!name || pod.name === name),
+    );
+    return listOf("Pod", visible.map((pod) => ({
+      metadata: { name: pod.name, namespace: pod.namespace, labels: labelsFor(pod) },
+      spec: {
+        nodeName: pod.node,
+        runtimeClassName: pod.runtimeClass ?? undefined,
+        serviceAccountName: serviceAccountFor(pod)?.name ?? "default",
+        containers: [{ name: pod.app, image: pod.image }],
+      },
+      status: { phase: pod.status, podIP: podIp(pod) },
+    })));
+  }
+
+  if (resource === "namespaces") {
+    const names = namespaceNames().filter((candidate) => !name || candidate === name);
+    return listOf("Namespace", names.map((candidate) => ({
+      metadata: { name: candidate, labels: allNamespaceLabels(candidate) },
+      status: { phase: "Active" },
+    })));
+  }
+
+  if (resource === "nodes") {
+    return listOf("Node", [{
+      metadata: { name: NODE.name, labels: NODE.labels },
+      status: {
+        addresses: [{ type: "InternalIP", address: NODE.ip }],
+        nodeInfo: { kernelVersion: NODE.kernelVersion, osImage: NODE.os, containerRuntimeVersion: NODE.runtime },
+      },
+    }]);
+  }
+
+  return { kind: "Status", status: "Failure", reason: "NotFound", code: 404 };
 }
 
 const CURL_TLS_ERROR = [
@@ -3624,6 +3736,14 @@ function curlCommand(args: string[], inPod: boolean): string {
   const isApiServer =
     (host === API_SERVER.host && port === API_SERVER.port) ||
     (inPod && (inClusterNames.includes(host) || host === API_SERVER.serviceIp) && port === 443);
+
+  /* The kubelet has anonymous auth disabled, so it rejects anonymous calls. */
+  const isKubelet = (host === NODE.ip || host === "localhost" || host === "127.0.0.1") && port === 10250;
+  if (isKubelet) {
+    if (scheme === "http") return "Client sent an HTTP request to an HTTPS server.";
+    if (!insecure) return CURL_TLS_ERROR;
+    return [...(includeHeaders ? ["HTTP/2 401 ", "content-type: text/plain; charset=utf-8", ""] : []), "Unauthorized"].join("\n");
+  }
 
   if (!isApiServer) {
     if (!inPod && inClusterNames.includes(host)) return `curl: (6) Could not resolve host: ${host}`;
@@ -3692,7 +3812,7 @@ function kubectl(raw: string): string {
   const positional = head.filter(
     (token, index) =>
       !token.startsWith("-") &&
-      !["-n", "--namespace", "-o", "--output", "-l", "--selector", "--as", "--tail", "-c", "--container"].includes(
+      !["-n", "--namespace", "-o", "--output", "-l", "--selector", "--as", "--as-group", "--tail", "-c", "--container"].includes(
         head[index - 1] ?? "",
       ),
   );
