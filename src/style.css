@@ -1643,7 +1643,7 @@ a {
 }
 
 .cli-help-command-link::after {
-  content: " â†—";
+  content: " ↗";
   color: var(--edera-cyan);
   font-weight: 700;
 }
