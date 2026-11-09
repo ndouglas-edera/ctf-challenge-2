@@ -234,7 +234,7 @@ submit cluster-status-public
 kubectl logs edera-ebpf-test -n platform
 ```
 ```
-kubectl kworkerd
+submit kworkerd
 ```
 
 <br/><br/>
