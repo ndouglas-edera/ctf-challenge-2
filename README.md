@@ -225,6 +225,15 @@ submit cluster-status-public
 <br/><br/>
 
 ### K10: Inadequate Logging And Monitoring
+- ```kubectl logs edera-ebpf-test -n platform``` shows the probe ticking along at around 400 events/s.
+- Then it logs ```ALERT … pod=customer-c/recommendation-c uid=0 parent=/usr/bin/su exe=/tmp/.cache/kworkerd```, a fake kernel-worker name running from ```/tmp``` as **root**.
+- ```recommendation-c```’s own logs start showing CPU throttling at the same moment.
+- ```recommendation-c``` is the pod from K01 that allowed privilege escalation, and here it was used to get root through ```su```.
+
+```
+submit recommendation-c
+```
+
 <br/><br/>
 
 The challenge source lists this as the final stage.
