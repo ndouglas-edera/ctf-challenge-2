@@ -4369,7 +4369,7 @@ function submit(value: string): string {
       "All ten OWASP-aligned flags captured and submitted.",
       "",
       "Your reward is waiting for you:",
-      "https://edera.dev/stories/disaggregated-kubernetes-contain-the-blast-radius",
+      "https://edera.dev/stories/ocap-bounded-authority",
     ].join("\n");
   }
 
@@ -4468,7 +4468,7 @@ function captureCurrentStage(): string {
           "Misconfigurations still happened, but each one stayed inside its zone.",
           "",
           "Your reward is waiting for you:",
-          "https://edera.dev/stories/disaggregated-kubernetes-contain-the-blast-radius",
+          "https://edera.dev/stories/ocap-bounded-authority",
         ].join("\n"),
   ].join("\n");
 }
@@ -5072,7 +5072,7 @@ function render(): void {
                   its container security context was misconfigured. Your reward is
                   waiting at
                   <a
-                    href="https://edera.dev/stories/disaggregated-kubernetes-contain-the-blast-radius"
+                    href="https://edera.dev/stories/ocap-bounded-authority"
                     target="_blank"
                     rel="noopener"
                     referrerpolicy="origin"
