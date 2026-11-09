@@ -378,7 +378,7 @@ const stages: Stage[] = [
     reward: ["`allowPrivilegeEscalation: true` permits a process to gain privileges beyond its parent, including through setuid programs.", "Set `allowPrivilegeEscalation: false` and apply a consistent workload security baseline."],
   },
   {
-    title: "K02 · Overly permissive authorization",
+    title: "K02 · Overly permissive authorisation",
     objective: "Find the service account bound to excessive permissions.",
     brief: ["Read up on RBAC good practices: https://kubernetes.io/docs/concepts/security/rbac-good-practices/", "Submit the affected service account."],
     answers: ["report-bot", "customer-b/report-bot", "system:serviceaccount:customer-b:report-bot"],
@@ -417,7 +417,7 @@ const stages: Stage[] = [
     reward: ["billing-api-ingress selected app=biling-api, which matches no pods.", "With nothing selected, billing-api accepted traffic from every namespace.", "A selector typo fails silently: pair a default-deny with allow rules, and test the flows."],
   },
   {
-    title: "K06 · Overly exposed Kubernetes components",
+    title: "K06 · Overly-exposed components",
     objective: "The API server tells anyone who asks, no credentials needed. What exact version does it leak?",
     brief: ["Read up on the Kubernetes API: https://kubernetes.io/docs/concepts/overview/kubernetes-api/", "Submit the exact version string."],
     answers: ["v1.30.2", "1.30.2"],
@@ -431,7 +431,7 @@ const stages: Stage[] = [
     reward: ["/version answered an anonymous request with the exact build: v1.30.2.", "That release is out of support, so an attacker can match it against known CVEs.", "Keep the API server off untrusted networks, and treat version data as reconnaissance."],
   },
   {
-    title: "K07 · Misconfigured and vulnerable components",
+    title: "K07 · Misconfigured components",
     objective: "An end-of-life PHP image with known CVEs is sitting in the node's Edera image cache. Find it and remove it.",
     brief: ["Read up on managing images with the protect CLI: https://docs.edera.dev/guides/cli-user-guide/#removing-images", "The flag is captured automatically once the image is removed."],
     answers: ["sha256:a766a07ccdc7b9dae4f45d0f811a7dfbd5845fe610514b313b3aba831fc7b44b"],
