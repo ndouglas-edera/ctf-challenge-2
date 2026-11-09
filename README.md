@@ -205,6 +205,15 @@ submit customer-d/analytics-batch
 
 
 ### K09: Broken Authentication Mechanisms
+- A ```ClusterRoleBinding``` called ```cluster-status-public``` grants ```get/list/watch``` on pods, nodes and namespaces to ```system:unauthenticated```.
+- Its annotation reads “**OPS-2291 temporary: external uptime checker, remove after migration**” which is a forgotten temporary grant.
+- ```kubectl get clusterrolebindings -o wide``` shows ```system:unauthenticated``` in the ```GROUPS``` column, and **describe** shows the ticket annotation.
+- ```kubectl auth can-i --list --as=system:anonymous``` lists pods, nodes and namespaces.
+- ```curl -sk https://10.10.0.10:6443/api/v1/pods``` returns every pod in the cluster.
+- ```/api/v1/secrets``` still returns a realistic 403 (“cannot list resource secrets… at the cluster scope”).
+- The OWASP page says to disable anonymous auth on both the API server and the kubelet.
+- On this node, the kubelet does it right: ```/var/lib/kubelet/config.yaml``` has ```anonymous: enabled: false```
+- ```curl -sk https://10.10.0.12:10250/pods``` naturally should return as **Unauthorised**.
 <br/><br/>
 
 ### K10: Inadequate Logging And Monitoring
