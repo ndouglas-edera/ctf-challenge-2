@@ -214,6 +214,14 @@ submit customer-d/analytics-batch
 - The OWASP page says to disable anonymous auth on both the API server and the kubelet.
 - On this node, the kubelet does it right: ```/var/lib/kubelet/config.yaml``` has ```anonymous: enabled: false```
 - ```curl -sk https://10.10.0.12:10250/pods``` naturally should return as **Unauthorised**.
+
+```
+kubectl describe clusterrolebinding cluster-status-public
+```
+
+```
+submit cluster-status-public
+```
 <br/><br/>
 
 ### K10: Inadequate Logging And Monitoring
