@@ -468,11 +468,17 @@ const stages: Stage[] = [
   },
   {
     title: "K10 · Inadequate logging and monitoring",
-    objective: "Identify the audit rule missing coverage for Secret access.",
-    brief: ["Inspect ~/manifests/audit-policy.yaml and ~/evidence/audit-review.txt.", "Submit the missing audit rule."],
-    answers: ["secrets-metadata-and-response"],
+    objective: "Something suspicious ran on this node, and the alert never reached anyone. What process was it?",
+    brief: ["Read up on inadequate logging and monitoring: https://kubernetes-top10.owasp.org/2025/en/src/K10-Inadequate-Logging-And-Monitoring.html", "Submit the process name."],
+    answers: ["kworkerd", "/tmp/.cache/kworkerd"],
+    nudges: {
+      "recommendation-c": "That's where it ran. What process did the monitor see?",
+      "edera-ebpf-test": "That's the monitor. What did it detect?",
+      "su": "That's how it got root. What did it run?",
+      "/usr/bin/su": "That's how it got root. What did it run?",
+    },
     flag: "EDERA{K10_INSUFFICIENT_MONITORING}",
-    reward: ["Audit logs must support investigation of sensitive operations.", "Protect logs, alert on suspicious activity, and test coverage."],
+    reward: ["The monitor caught /tmp/.cache/kworkerd running as root in recommendation-c.", "Its alert webhook returned 404, the alert was dropped, and nobody was told.", "Detection without delivery is no detection: alert on failed alerts, and test the path end to end."],
   }
 ];
 
@@ -2895,6 +2901,11 @@ const podLogs: Record<string, string[]> = {
     "2026-11-08T08:11:58.703Z attached tracepoint: sched/sched_process_exec",
     "2026-11-08T08:12:28.703Z events/s: 412",
     "2026-11-08T08:12:58.703Z events/s: 398",
+    "2026-11-08T08:13:28.703Z events/s: 405",
+    "2026-11-08T08:18:44.117Z ALERT severity=high rule=exec-from-tmp pod=customer-c/recommendation-c uid=0 parent=/usr/bin/su exe=/tmp/.cache/kworkerd",
+    "2026-11-08T08:18:44.131Z ERROR alert sink POST https://alerts.acme.internal/hooks/runtime: 404 Not Found; alert dropped (retries=0)",
+    "2026-11-08T08:18:58.703Z events/s: 2193",
+    "2026-11-08T08:19:28.703Z events/s: 2207",
   ],
   "analytics-batch-d": [
     "2026-11-08T08:10:00.012Z INFO  analytics-batch 0.9.0 job=nightly-rollup",
@@ -2917,6 +2928,9 @@ const podLogs: Record<string, string[]> = {
     "2026-11-08T08:14:44.019Z INFO  GET /v1/recommendations?user=1907 200 28ms",
     "2026-11-08T08:17:26.402Z WARN  GET http://analytics.customer-d.svc:8080/v1/trending timed out after 5s; using cached trends",
     "2026-11-08T08:17:31.409Z INFO  refreshed customer profiles from billing-api.customer-b.svc:8080 (1,920 records)",
+    "2026-11-08T08:18:52.660Z WARN  event loop lag 2,412ms (cpu throttled)",
+    "2026-11-08T08:19:20.004Z WARN  GET /v1/recommendations?user=4410 200 1,884ms",
+    "2026-11-08T08:19:51.337Z WARN  event loop lag 3,105ms (cpu throttled)",
   ],
   "gpu-workload": [
     "==========",
@@ -4450,8 +4464,8 @@ function captureCurrentStage(): string {
           "-----------",
           "All ten OWASP-aligned flags captured and submitted.",
           "",
-          "The final flag was emitted by the zone log stream.",
-          "A workload was launched into its own Edera zone.",
+          "Every workload in this lab ran in its own Edera zone.",
+          "Misconfigurations still happened, but each one stayed inside its zone.",
           "",
           "Your reward is waiting for you:",
           "https://edera.dev/stories/disaggregated-kubernetes-contain-the-blast-radius",
